@@ -1,0 +1,86 @@
+# -*- coding: utf-8 -*-
+"""兜底的判断（不依赖 AstrBot）：框架报错特征、只有 <think> 没正文、去 AI 腔。借 mindscape 的思路。"""
+
+import re
+
+# AstrBot 4.29.3 里调模型出错时会把这些话原样发到聊天里（从源码里对的：astr_agent_run_util / tool_loop_agent_runner / internal.py）。
+# 只认「开头就是」的：模型正常回话里提到这些词不算
+ERR_HEAD = re.compile(
+    r"^\s*(?:"
+    r"Error occurred during AI execution|Error occurred while processing agent(?: request)?|"
+    r"LLM 响应错误\s*[:：]|AstrBot 请求失败|AstrBot 处理失败|"
+    r"Traceback \(most recent call last\)|\[Errno \d+\]|"
+    r"Error code: \d{3}\b|APIConnectionError|APITimeoutError|RateLimitError|AuthenticationError|"
+    r"Connection error\.?\s*$|Request timed out\.?\s*$"
+    r")",
+    re.I,
+)
+
+
+def is_error_text(text):
+    return bool(ERR_HEAD.match(text or ""))
+
+
+# 4.29.3 里模型回了空（没有正文）也会被当成报错：「LLM 响应错误: All chat models failed: EmptyModelOutputError: OpenAI completion has no usable output」。
+# 这种报错的真正原因是「模型什么都没说」→ 拦下以后补调一次，比直接不发好
+EMPTY_ERR = re.compile(
+    r"EmptyModelOutputError|no usable output|returned empty output", re.I
+)
+
+
+def is_empty_error(text):
+    return is_error_text(text) and bool(EMPTY_ERR.search(text or ""))
+
+
+THINK = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.S | re.I)
+THINK_OPEN = re.compile(r"<think(?:ing)?>.*\Z", re.S | re.I)
+
+
+def strip_think(text):
+    """去掉 <think>…</think>（没闭合的从 <think> 到结尾也去掉）"""
+    t = THINK.sub("", text or "")
+    return THINK_OPEN.sub("", t).strip()
+
+
+def think_only(text):
+    """有 <think> 但去掉以后什么都没剩（模型只想了、没说）"""
+    t = text or ""
+    return bool(re.search(r"<think", t, re.I)) and not strip_think(t)
+
+
+# ───── 去 AI 腔（默认关）─────
+AI_TONE_RULE = "（像群里的真人那样聊天：别用「作为一个AI」「希望对你有帮助」「有什么可以帮你的吗」这类客服腔。）"
+_AI_PREFIX = re.compile(
+    r"^\s*作为(?:一个|一名)?(?:AI|ＡＩ|人工智能|语言模型|AI助手|智能助手|聊天机器人)[，,、]?\s*",
+    re.I,
+)
+_AI_TAIL = [
+    re.compile(
+        r"[，,。！!~\s]*希望(?:这|以上|我的)?(?:些)?(?:回答|信息|内容|建议)?(?:能|可以)?(?:对你|对您)?(?:有所)?(?:帮到你|帮助到你|有帮助|有所帮助|帮助)[了的]?[。！!~\s]*$"
+    ),
+    re.compile(
+        r"[，,。！!~\s]*如果(?:你|您)(?:还)?有(?:其他|别的|任何|什么)?(?:问题|疑问|需要)[，,]?(?:请|欢迎)?(?:随时)?(?:告诉我|问我|联系我|提问|找我)[。！!~\s]*$"
+    ),
+    re.compile(
+        r"[，,。！!~\s]*有什么(?:我)?(?:可以|能)(?:帮(?:你|您)|帮到你)的(?:吗|嘛)?[？?]?\s*$"
+    ),
+    re.compile(r"[，,。！!~\s]*请(?:随时)?(?:告诉我|问我)[。！!~\s]*$"),
+]
+
+
+def strip_ai_tone(text):
+    """→ (新文字, 去掉了什么[])。去完什么都不剩就原样返回（不能把整句话吃掉）"""
+    t, gone = text or "", []
+    m = _AI_PREFIX.match(t)
+    if m:
+        gone.append(m.group(0).strip())
+        t = t[m.end() :]
+    for pat in _AI_TAIL:
+        m = pat.search(t)
+        if m:
+            gone.append(m.group(0).strip(" ，,。！!~"))
+            t = t[: m.start()]
+    t = t.strip()
+    if not t:
+        return text, []
+    return t, gone

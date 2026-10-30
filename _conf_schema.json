@@ -1,0 +1,543 @@
+{
+  "alive": {
+    "description": "总开关",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "开启 大肥鱼 · 活人感",
+        "type": "bool",
+        "default": true,
+        "hint": "关掉以后整个插件不做事（攒一攒、群聊节奏、省 token、兜底都停）。想只关其中一块，用下面各分组里的开关"
+      }
+    }
+  },
+  "gather": {
+    "description": "攒一攒（连着发的几条等一等，只回一次）",
+    "type": "object",
+    "items": {
+      "enable": {
+        "description": "开启攒一攒再回",
+        "type": "bool",
+        "default": true,
+        "hint": "关掉以后每条消息照 AstrBot 原来的样子，一条一条回。"
+      },
+      "private": {
+        "description": "私聊里攒",
+        "type": "bool",
+        "default": true,
+        "hint": "私聊里每条都会叫模型。开着：同一个人连着发的几条，等他停下来只回一次。"
+      },
+      "group": {
+        "description": "群里攒",
+        "type": "bool",
+        "default": true,
+        "hint": "按「群 + 人」攒，只攒要回的（@ 机器人、引用机器人、唤醒词、别的插件决定要回的）。@ 以后紧接着补的话和图、先发图再 @ 的，也会并进来。两个人同时 @ 互不影响。"
+      },
+      "base_sec": {
+        "description": "基础等几秒",
+        "type": "float",
+        "default": 2.0,
+        "hint": "最后一条发完以后等这么久，没有新的就回。同一个人又发了一条就重新计时。"
+      },
+      "pic_extra_sec": {
+        "description": "最后一条只有图 / 表情包：多等几秒",
+        "type": "float",
+        "default": 2.0,
+        "hint": "只发了图、没带字，后面多半还有一句（「这是啥」）。"
+      },
+      "short_extra_sec": {
+        "description": "最后一条很短、又没有句末标点：多等几秒",
+        "type": "float",
+        "default": 1.0,
+        "hint": "比如「在吗」「那个」，话多半没说完。这条比下面的问句先看：「在吗」按这条算。"
+      },
+      "short_len": {
+        "description": "几个字以内算「很短」",
+        "type": "int",
+        "default": 3,
+        "hint": "不算空格。"
+      },
+      "quick_sec": {
+        "description": "问句 / 长句：只等几秒",
+        "type": "float",
+        "default": 1.2,
+        "hint": "最后一条是问句（看下一项）或者够长（再下一项），说明话说完了，快点回。"
+      },
+      "quick_endings": {
+        "description": "以这些字结尾算问句",
+        "type": "string",
+        "default": "？?吗呢",
+        "hint": "每个字都算，不用隔开。"
+      },
+      "long_len": {
+        "description": "几个字以上算「长句」",
+        "type": "int",
+        "default": 12,
+        "hint": "不算空格。"
+      },
+      "max_sec": {
+        "description": "最多等几秒",
+        "type": "float",
+        "default": 15.0,
+        "hint": "从第一条要回的那条算起。对方一直在发也得回：到了这个时间就把已经攒下的一起回，后面的下一轮再说。"
+      },
+      "lookback_sec": {
+        "description": "先发后 @：往回并几秒内他发的",
+        "type": "float",
+        "default": 20.0,
+        "hint": "群友常常先发图、过几秒再 @ 机器人问「这是啥」。他 @ 之前这么多秒内发的、还没回过的几条，也一起交给模型。设成 0 就不往回并。"
+      },
+      "max_msgs": {
+        "description": "一次最多并几条",
+        "type": "int",
+        "default": 20,
+        "hint": "太多的话只留最近的几条（要回的那条一定留着）。"
+      },
+      "skip_prefixes": {
+        "description": "这些开头的当指令：不攒、不等",
+        "type": "list",
+        "default": [
+          "/"
+        ],
+        "hint": "AstrBot 和插件注册的指令（/help、/reset 这些）本来就认得出，不用写在这里。这里是再加几个开头，比如「#」。"
+      },
+      "skip_groups": {
+        "description": "这些群不攒",
+        "type": "list",
+        "default": [],
+        "hint": "填群号。留空 = 所有群都攒（「群里攒」开着的话）。"
+      },
+      "hold_phrases": {
+        "description": "稍等 / 还没说完 / 等我发完：先不回，多等一阵",
+        "type": "bool",
+        "default": true,
+        "hint": "最后一条是「稍等」「还没说完」「等我发完」这类短话时，先别回，等他接着说（后面发的会并进来一起回）。借 jiehua 的思路。想关掉就关这一项"
+      },
+      "hold_sec": {
+        "description": "说了「稍等」之后最多等几秒",
+        "type": "float",
+        "default": 45.0,
+        "hint": "他说了「稍等」以后一直没再发：等到这个秒数就照常回。他接着发了，就并进来一起回"
+      }
+    }
+  },
+  "rhythm": {
+    "description": "群聊节奏（接话 / 在线一阵 / 冷场试探 / 收尾）",
+    "type": "object",
+    "items": {
+      "enable": {
+        "description": "开启群聊节奏",
+        "type": "bool",
+        "default": true,
+        "hint": "关掉以后插件什么都不做：只有 @ 才回（AstrBot 原来的样子）。"
+      },
+      "follow_enable": {
+        "description": "接话：没 @ 但在接它的话也接",
+        "type": "bool",
+        "default": true,
+        "hint": "机器人在群里说完话的一小会儿里，有人没 @ 它、但明显在接它的话（紧跟着它、说「你」、在问、接了它的词、是它刚回的人……），也接。"
+      },
+      "window_sec": {
+        "description": "接话：它说完话多少秒内的消息才看",
+        "type": "int",
+        "default": 150,
+        "hint": "超过这个时间的消息不当成在接它的话。"
+      },
+      "yes_score": {
+        "description": "接话：多少分直接接",
+        "type": "float",
+        "default": 4.0,
+        "hint": "信号的分：它刚回的人 +2、它刚点名的人 +2、叫了它的名字 +2、说「你」+1.5、在问 +1、接了它的词 +1~2.5、紧跟着它 +0.5~1、他这段第一句 +0.5；中间有别人插了两句以上 -1.5、别人刚 @ 了他 -2.5、光发图 -1.5。"
+      },
+      "no_score": {
+        "description": "接话：多少分以下直接不接",
+        "type": "float",
+        "default": 1.5,
+        "hint": "在这个分和上一项之间的，让模型看一眼再定（下面那项能关）。"
+      },
+      "ask_model": {
+        "description": "接话：拿不准时让模型看一眼",
+        "type": "bool",
+        "default": true,
+        "hint": "把最近 8 条和这一条给模型，只让它答「是 / 否」，几十个 token。关掉：拿不准的一律不接。"
+      },
+      "judge_provider_id": {
+        "description": "接话：判断用哪个模型",
+        "type": "string",
+        "default": "",
+        "_special": "select_provider",
+        "hint": "留空 = 这个群在用的对话模型。可以选一个便宜、快的。"
+      },
+      "judge_timeout_sec": {
+        "description": "接话：模型多少秒没答算「不是」",
+        "type": "float",
+        "default": 8.0,
+        "hint": "让模型判断「这句是不是在接它的话」时，超过这个秒数没答就当「不是」、不接；等的时候别的群照常回，不会卡住。"
+      },
+      "judge_daily_max": {
+        "description": "接话：每天最多让模型判断几次",
+        "type": "int",
+        "default": 300,
+        "hint": "到上限以后拿不准的一律不接。"
+      },
+      "max_turns": {
+        "description": "接话：同一个人不 @ 最多连着接几轮",
+        "type": "int",
+        "default": 5,
+        "hint": "防止跟别的机器人你一句我一句停不下来。到了以后要 @ 它才回；他 @ 一下、或者 10 分钟没接，就重新算。"
+      },
+      "owner_max_turns": {
+        "description": "接话：AstrBot 管理员最多连着接几轮",
+        "type": "int",
+        "default": 10,
+        "hint": "管理员就是 AstrBot 配置里「管理员 ID」填的人。"
+      },
+      "turn_reset_min": {
+        "description": "接话：多少分钟没接，轮数清零",
+        "type": "float",
+        "default": 10.0,
+        "hint": "同一个人不 @ 它、连着接了几轮以后会停；这么多分钟没接过，轮数重新算。"
+      },
+      "pic_prob": {
+        "description": "接话：光发图 / 表情时接的概率",
+        "type": "float",
+        "default": 0.4,
+        "hint": "就算看着是在接它的话，光发一张图也不一定要回（0~1）。"
+      },
+      "rhythm_enable": {
+        "description": "在线一阵：说上话以后跟着聊一阵",
+        "type": "bool",
+        "default": true,
+        "hint": "机器人在群里回了一句以后「在线」一阵子：这期间没点名的话也按概率挑着接；冷场会试探一句、到点会说句收尾话再潜水。关掉：只剩「接话」。"
+      },
+      "online_min": {
+        "description": "在线一阵：每次在线最少几分钟",
+        "type": "float",
+        "default": 8.0,
+        "hint": "每次在线多久在这一项和下一项之间随机。"
+      },
+      "online_max": {
+        "description": "在线一阵：每次在线最多几分钟",
+        "type": "float",
+        "default": 15.0,
+        "hint": "每次进「在线」（被 @ 回话之后聊一阵）时，在线时长在最小和最大之间随机取一个。"
+      },
+      "max_minutes": {
+        "description": "在线一阵：被一直 @ 着最多在线几分钟",
+        "type": "float",
+        "default": 40.0,
+        "hint": "在线时有人找它，就多待 5 分钟，但从进在线算起最多这么久。"
+      },
+      "reply_prob": {
+        "description": "在线一阵：没点名的消息挑着接的概率",
+        "type": "float",
+        "default": 0.3,
+        "hint": "0~1。别人在 @ 别人、引用别人的不接。模型觉得没什么好说的会只回 [[不说]]，插件就不发。"
+      },
+      "pic_factor": {
+        "description": "在线一阵：光发图 / 表情时概率再乘几",
+        "type": "float",
+        "default": 0.3,
+        "hint": "不然见图就接，显得话痨。"
+      },
+      "min_gap_sec": {
+        "description": "在线一阵：挑着接两句之间至少隔几秒",
+        "type": "int",
+        "default": 45,
+        "hint": "在线时挑着接话，两句之间至少隔这么多秒，防止刷屏。"
+      },
+      "max_replies": {
+        "description": "在线一阵：每次在线最多挑着接几次",
+        "type": "int",
+        "default": 6,
+        "hint": "被 @、接话的不算在里面。"
+      },
+      "idle_min": {
+        "description": "冷场：在线时几分钟没人说话算冷场",
+        "type": "float",
+        "default": 5.0,
+        "hint": "在线时这么多分钟没有人说话，就算冷场，可能试探一句。"
+      },
+      "probe_prob": {
+        "description": "冷场：试探一句的概率",
+        "type": "float",
+        "default": 0.3,
+        "hint": "冷场时有这个概率顺着刚才的话题再说一句（0~1）；没掷中就安静回观望。"
+      },
+      "probe_wait_min": {
+        "description": "冷场：试探后几分钟没人理就回观望",
+        "type": "float",
+        "default": 2.0,
+        "hint": "冷场试探说出去以后，这么多分钟没人理，就回观望（不再追着说）。"
+      },
+      "exit_line": {
+        "description": "收尾：到点时说句收尾话",
+        "type": "bool",
+        "default": true,
+        "hint": "在线到点、大家还在聊时，说一句「我先潜水了」这种（让模型按人格说）再回观望。关掉：到点默默走。"
+      },
+      "exit_line_prob": {
+        "description": "收尾：说收尾话的概率",
+        "type": "float",
+        "default": 0.7,
+        "hint": "在线到点、大家还在聊的时候，说一句收尾话再潜水的概率；其余情况悄悄回观望。"
+      },
+      "exit_if_chat_within_min": {
+        "description": "收尾：最近几分钟还有人聊才说收尾话",
+        "type": "float",
+        "default": 3.0,
+        "hint": "到点时群里已经没人聊了，就默默走，不说收尾话。"
+      },
+      "cooldown_min": {
+        "description": "收尾：收尾后几分钟不主动插话",
+        "type": "float",
+        "default": 10.0,
+        "hint": "这期间不接话、不挑着接；被 @ 照样回（回了也不重新进在线）。"
+      },
+      "line_provider_id": {
+        "description": "试探 / 收尾用哪个模型",
+        "type": "string",
+        "default": "",
+        "_special": "select_provider",
+        "hint": "留空 = 这个群在用的对话模型。人格用 AstrBot 的默认人格。"
+      },
+      "lines_per_hour": {
+        "description": "每个群每小时最多主动说几句",
+        "type": "int",
+        "default": 4,
+        "hint": "试探 + 收尾加起来。这两种是机器人自己发起的、没有消息事件；装了省 token 插件的话，每次说之前还会先问它。"
+      },
+      "bot_names": {
+        "description": "机器人的名字和外号",
+        "type": "list",
+        "default": [],
+        "hint": "群友不 @、直接叫名字时算加分；让模型判断时也用这个名字。留空 = 用它的 QQ 昵称和群名片。"
+      },
+      "skip_ai": {
+        "description": "别人家的 AI 不接话、不挑着接",
+        "type": "bool",
+        "default": true,
+        "hint": "读「大肥鱼 · 认 AI + 对聊刹车」插件认出来的名单（没装就当没有）。别人家的 AI @ 你的机器人时回不回，由那个插件管。"
+      },
+      "groups": {
+        "description": "只在这些群里用",
+        "type": "list",
+        "default": [],
+        "hint": "填群号。留空 = 所有群。"
+      },
+      "closing_skip": {
+        "description": "收尾句（好了 / 就这样 / 睡了）不接话",
+        "type": "bool",
+        "default": true,
+        "hint": "别人说「好了」「就这样」「睡了」「晚安」这类说完就走的话，没 @ 它就不接、也不挑着接（被 @ 照样回）。借 jiehua 的思路"
+      },
+      "topic_overlap": {
+        "description": "接话：话题词没对上两个就扣分",
+        "type": "bool",
+        "default": true,
+        "hint": "不是它刚回的那个人、又没叫它名字，说的话跟它上一句的话题词对不上两个 → 接话分数扣一点。借 natural_followup 的思路"
+      },
+      "topic_penalty": {
+        "description": "接话：话题词没对上两个扣几分",
+        "type": "float",
+        "default": 1.0,
+        "hint": "数字越大越不爱接「顺嘴说一句」的路人话；0 = 等于不扣"
+      }
+    }
+  },
+  "budget": {
+    "description": "省 token（花得越多回得越少）",
+    "type": "object",
+    "items": {
+      "enable": {
+        "description": "开启省 token（掷骰子决定回不回）",
+        "type": "bool",
+        "default": true,
+        "hint": "关掉以后只记账、不拦：每条都照常回，面板上照样能看花了多少。"
+      },
+      "half_usd": {
+        "description": "花到多少美元 意愿掉到一半左右",
+        "type": "float",
+        "default": 0.45,
+        "hint": "按最近「统计窗口」小时里花的钱算。默认 0.45：花 $0.45 时回复意愿约 55%。填 0 = 不省（意愿一直 100%）。"
+      },
+      "shape": {
+        "description": "曲线形状",
+        "type": "float",
+        "default": 0.6,
+        "hint": "小于 1：一开始掉得快，之后越来越慢。越小越平。一般不用改。"
+      },
+      "floor": {
+        "description": "意愿的底线",
+        "type": "float",
+        "default": 0.1,
+        "hint": "再怎么花也留着的意愿（0~1）。默认 0.1 = 10%。"
+      },
+      "window_hours": {
+        "description": "统计窗口（小时）",
+        "type": "int",
+        "default": 24,
+        "hint": "按最近这么多小时花的钱算意愿。「重新算」过了这么久也自动失效。最多 168（7 天）。"
+      },
+      "power_private": {
+        "description": "私聊的次方",
+        "type": "float",
+        "default": 0,
+        "hint": "回复概率 = 意愿 ^ 次方。次方越小越不受影响；0 = 永远回（默认：私聊每条都回）。"
+      },
+      "power_direct": {
+        "description": "群里找它（@ / 引用 / 唤醒词）的次方",
+        "type": "float",
+        "default": 0.1,
+        "hint": "默认 0.1：被找的时候几乎都回（意愿 55% 时 94%，掉到底线也有 79%）。"
+      },
+      "power_follow": {
+        "description": "接话的次方（没 @ 但在接它的话）",
+        "type": "float",
+        "default": 2.5,
+        "hint": "群聊节奏插件判断「在接它的话」时会标成接话（fatfish_kind = follow）。"
+      },
+      "power_chat": {
+        "description": "插话的次方（没人找它 它自己想接一句）",
+        "type": "float",
+        "default": 3.0,
+        "hint": "群聊节奏插件标的 chat；AstrBot 自带的「主动回复」这种没人找它的也按插话算。"
+      },
+      "power_extra": {
+        "description": "冒泡 / 主动找人的次方",
+        "type": "float",
+        "default": 3.0,
+        "hint": "别的插件主动发言时标成 extra。"
+      },
+      "skip_window_min": {
+        "description": "被跳过后多少分钟内又来找 算「执着」",
+        "type": "int",
+        "default": 15,
+        "hint": "同一个人在同一个会话被跳过以后，这么多分钟内又来找它（私聊 / @ / 接话）：每被跳过一次，概率开一次平方根（越执着越容易回），回了就清零。填 0 = 不开方。"
+      },
+      "price_miss": {
+        "description": "输入价格：没命中缓存（美元 / 百万 token）",
+        "type": "float",
+        "default": 0.15,
+        "hint": "默认按 DeepSeek（deepseek-flash）的价格。换了模型就改成它的价格。"
+      },
+      "price_hit": {
+        "description": "输入价格：命中缓存（美元 / 百万 token）",
+        "type": "float",
+        "default": 0.003,
+        "hint": "同一段开头（人设、聊天记录）反复发，模型那边会缓存，命中的部分便宜很多。"
+      },
+      "price_out": {
+        "description": "输出价格（美元 / 百万 token）",
+        "type": "float",
+        "default": 0.6,
+        "hint": "机器人说的话（含推理模型的思考部分）按这个价。"
+      },
+      "peak_enable": {
+        "description": "DeepSeek 峰谷价：高峰时段价格翻倍",
+        "type": "bool",
+        "default": true,
+        "hint": "高峰 = 工作日 UTC 01:00–04:00、06:00–10:00（北京时间 9–12 点、14–18 点）。不用 DeepSeek 就关掉。"
+      },
+      "peak_mult": {
+        "description": "高峰时段价格乘几",
+        "type": "float",
+        "default": 2.0,
+        "hint": "DeepSeek 高峰时段是原价的 2 倍。"
+      },
+      "peak_hours_utc": {
+        "description": "高峰时段（UTC，周一到周五）",
+        "type": "list",
+        "default": [
+          "01:00-04:00",
+          "06:00-10:00"
+        ],
+        "hint": "一行一段，比如「01:00-04:00」。北京时间减 8 小时就是 UTC。"
+      },
+      "peak_free_days": {
+        "description": "按原价算的日子（法定节假日）",
+        "type": "list",
+        "default": [],
+        "hint": "一行一个日期，比如「2026-10-01」。这天全天按原价算。"
+      },
+      "full_default_hours": {
+        "description": "「火力全开」默认开几小时",
+        "type": "float",
+        "default": 3,
+        "hint": "「/省token 火力全开」后面不写小时数时用这个。火力全开时所有场合都不掷（最多 72 小时，再长用「一直」）。"
+      },
+      "free_users": {
+        "description": "不限的 QQ 号",
+        "type": "list",
+        "default": [],
+        "hint": "这些人找它永远回。AstrBot 的管理员本来就不限，不用填。"
+      }
+    }
+  },
+  "guard": {
+    "description": "兜底（报错拦截 / 空回复救援 / 去 AI 腔）",
+    "type": "object",
+    "items": {
+      "enable": {
+        "description": "开启兜底",
+        "type": "bool",
+        "default": true,
+        "hint": "关掉以后下面三项都不做"
+      },
+      "block_errors": {
+        "description": "框架报错不发出去",
+        "type": "bool",
+        "default": true,
+        "hint": "AstrBot 调模型出错时会把「Error occurred during AI execution…」这类报错原样发到聊天里。开着就拦下来不发（日志里留一条）"
+      },
+      "rescue_empty": {
+        "description": "空回复救援",
+        "type": "bool",
+        "default": true,
+        "hint": "模型只回了 <think> 思考、没有正文（或者什么都没回）时，补调一次模型要一句正文；还是空就不发"
+      },
+      "rescue_timeout_sec": {
+        "description": "空回复救援：补调模型最多等几秒",
+        "type": "float",
+        "default": 25.0,
+        "hint": "补调的那一次模型调用的超时"
+      },
+      "strip_ai_tone": {
+        "description": "去 AI 腔（默认关）",
+        "type": "bool",
+        "default": false,
+        "hint": "开了以后：回话前提醒模型别用客服腔，发出去前也把「作为一个AI」「希望对你有帮助」这类句子去掉。默认关：语气交给人设自己管，插件不替你决定"
+      }
+    }
+  },
+  "compat": {
+    "description": "兼容（装了同类插件时让路）",
+    "type": "object",
+    "items": {
+      "auto_yield": {
+        "description": "检测到同类插件自动让路",
+        "type": "bool",
+        "default": true,
+        "hint": "装了并启用 group_chat_plus / SpectreCore / Heartflow / natural_followup / jiehua 任何一个时，本插件的群聊节奏和攒一攒自动让路，只保留省 token 和兜底；面板和日志会写明因为装了谁"
+      },
+      "force_gather": {
+        "description": "强制开攒一攒（不让路）",
+        "type": "bool",
+        "default": false,
+        "hint": "开了以后，即使检测到同类插件，攒一攒也照常工作"
+      },
+      "force_rhythm": {
+        "description": "强制开群聊节奏（不让路）",
+        "type": "bool",
+        "default": false,
+        "hint": "开了以后，即使检测到同类插件，群聊节奏也照常工作（注意：两个都在主动接话，可能重复回）"
+      },
+      "extra_plugins": {
+        "description": "另外要让路的插件（目录名里的关键字）",
+        "type": "list",
+        "default": [],
+        "hint": "除了上面那五个，还有哪些同类插件装了就让路：填目录名里的一段，比如 smoothchat"
+      }
+    }
+  }
+}
