@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-大肥鱼 · 活人感（AstrBot 插件）：攒一攒 + 群聊节奏 + 省 token + 兜底，合成一个。
+大肥鱼 · 活人感（AstrBot 插件）：攒一攒 + 群聊节奏 + 省 token + 兜底 + 发消息（v0.2.0：打字节奏 / 打字刹车 / 群里引用），合成一个。
 
 原来是三个插件（攒一攒 gather / 群聊节奏 rhythm / 省 token budget），共用一套钩子顺序，靠优先级互相猜。
 现在放进一个插件，顺序在这里排死：
 
-  群消息监听（max-1）  记一笔 → 群聊节奏打分（要不要接）→ 攒一攒记内容
-  要叫模型之前（1000000）  攒一攒等 → 省 token 掷骰子 → 群聊节奏记「正在回话」
+  群消息监听（max-1）  记一笔 → 发消息记一笔（刹车 / 引用要看）→ 群聊节奏打分（要不要接）→ 攒一攒记内容
+                       （撤回 / 戳一戳这类通知不是有人说话：只给发消息记「撤回了哪条」）
+  要叫模型之前（1000000）  攒一攒等 → 省 token 掷骰子 → 群聊节奏记「正在回话」→ 发消息登记「这个人在等她回」
                           （别的插件常在这个钩子里发「正在思考中…」，所以省 token 不能排到负数，不然被拦的也会先发出一句）
   回话请求（40）       群聊节奏的场景提示 + 兜底的去 AI 腔提示
   模型回完（max-1）    省 token 记账 + 兜底（模型什么都没回的救援）
-  发送前（max-1）      兜底（框架报错 / 只有 <think>）→ 群聊节奏（[[不说]]）
-  发完一句             群聊节奏记她说了什么、回了谁
+  发送前（max-1）      兜底（框架报错 / 只有 <think>）→ 群聊节奏（[[不说]]）→ 发消息上弦（AstrBot 每发一段都先过它：打字节奏 / 刹车 / 换引用）
+  发完（max-1）        发消息把上的弦卸掉（别的插件之后发的话不受影响）
+  发完一句（50）       群聊节奏记她说了什么、回了谁
 
 这个文件只负责注册钩子、把事件分发给 modules/ 里的模块，自己不写逻辑。逻辑在 modules/（AstrBot 这一层）和 core/（不依赖 AstrBot）。
 装了 group_chat_plus / SpectreCore / Heartflow / natural_followup / jiehua 任何一个：节奏和攒一攒自动让路，只留省 token 和兜底。
@@ -38,14 +40,20 @@ from .modules.budget_mod import BudgetMod
 from .modules.gather_mod import GatherMod
 from .modules.guard_mod import GuardMod
 from .modules.rhythm_mod import RhythmMod
+from .modules.send_mod import SendMod, notice_of
 
 PLUGIN_NAME = "astrbot_plugin_fatfish_alive"
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 TAG = "[活人感]"
 WAIT_PRIORITY = 1000000  # on_waiting_llm_request：比「认 AI」(sys.maxsize) 后、比别的插件默认的 0 先
 CMD = "省token"
 CMD_ALIAS = {"省Token", "省TOKEN"}
 _LIVE = None  # 现在在跑的插件实例（给「一到就记一笔」的过滤器用）
+QUOTE_LABEL = {
+    "smart": "跟着 AstrBot 的「引用回复」",
+    "always": "插件自己定",
+    "off": "不管",
+}
 
 
 def _bare(event):
@@ -64,7 +72,9 @@ class _Arrive(filter.CustomFilter):
 
     def filter(self, event, cfg):
         p = _LIVE
-        if p is not None:
+        if (
+            p is not None and notice_of(event) is None
+        ):  # 撤回 / 戳一戳这类通知不是有人说了一句
             try:
                 p.gather.arrive(event)
             except Exception:
@@ -117,6 +127,7 @@ class FatfishAlive(Star):
         self.gather = GatherMod(self)
         self.rhythm = RhythmMod(self)
         self.guard = GuardMod(self)
+        self.send = SendMod(self)
         self.stats = (self.store.get("alive").get("stats")) or {}
         self.yield_log = list(self.store.get("alive").get("yield_log") or [])[-20:]
         self.store.register(
@@ -135,7 +146,7 @@ class FatfishAlive(Star):
         self.yield_reasons()  # 开机就查一次让路，日志里留一笔
         logger.info(
             f"{TAG} v{VERSION} 已启用：攒一攒{self._tag('gather')} · 群聊节奏{self._tag('rhythm')} · "
-            f"省 token{self._tag('budget')} · 兜底{self._tag('guard')}"
+            f"省 token{self._tag('budget')} · 兜底{self._tag('guard')} · 发消息{self._tag('send')}"
         )
 
     # ───────── 给各模块用的 ─────────
@@ -276,15 +287,22 @@ class FatfishAlive(Star):
     @filter.custom_filter(_Arrive)
     @filter.event_message_type(filter.EventMessageType.ALL, priority=sys.maxsize - 1)
     async def on_message(self, event: AstrMessageEvent):
-        """每条消息：记一笔 → 群聊节奏（要不要接）→ 攒一攒（记内容）。都不拦；出错各自兜住"""
+        """每条消息：记一笔 → 发消息记一笔 → 群聊节奏（要不要接）→ 攒一攒（记内容）。都不拦；出错各自兜住"""
         if not self.alive_on():
+            return
+        raw = notice_of(event)
+        if raw is not None:
+            # QQ 的通知（撤回 / 戳一戳…）：不是有人说了一句，只记「撤回了哪条」
+            self.send.on_notice(event, raw)
             return
         try:
             self.note_msg(event)
         except Exception:
             pass
+        self.send.heard(event)
         if event.get_group_id():
             await self.rhythm.on_group(event)
+            self.send.woke(event)
         self.gather.on_message(event)
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=-sys.maxsize + 20)
@@ -311,6 +329,7 @@ class FatfishAlive(Star):
         if self.budget.gate(event):
             return
         self.rhythm.mark_busy(event)
+        self.send.waiting(event)
 
     @filter.on_llm_request(priority=40)
     async def on_llm_req(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -318,6 +337,7 @@ class FatfishAlive(Star):
             return
         self.rhythm.on_llm_req(event, req)
         self.guard.on_llm_req(event, req)
+        self.send.on_llm_req(event)
 
     @filter.on_llm_response(priority=sys.maxsize - 1)
     async def on_llm_resp(self, event: AstrMessageEvent, resp: LLMResponse):
@@ -330,9 +350,14 @@ class FatfishAlive(Star):
     async def on_decorate(self, event: AstrMessageEvent):
         if not self.alive_on():
             return
-        if await self.guard.on_decorate(event):
-            return
-        self.rhythm.on_decorate(event)
+        if not await self.guard.on_decorate(event):
+            self.rhythm.on_decorate(event)
+        self.send.arm(event)
+
+    @filter.after_message_sent(priority=sys.maxsize - 1)
+    async def after_sent_first(self, event: AstrMessageEvent):
+        """这一轮的话都发完了：发消息模块上的弦先卸掉（总开关关了也要卸）"""
+        self.send.after_sent(event)
 
     @filter.after_message_sent(priority=50)
     async def after_sent(self, event: AstrMessageEvent):
@@ -434,6 +459,12 @@ class FatfishAlive(Star):
         lines.append(
             f"兜底：拦下报错 {gd['errors']} 次 · 补了空回复 {gd['rescued']} 次 · 去客服腔 {gd['tone']} 次"
         )
+        sd, sc = self.send.today(), self.send.conf
+        lines.append(
+            f"发消息{'' if self.active('send') else '（不工作）'}：打字节奏{'开' if sc('typing_human') else '关'} · "
+            f"打字刹车{'开' if sc('typing_brake') else '关'} · 群里引用 {QUOTE_LABEL.get(sc('quote_mode'), sc('quote_mode'))}；"
+            f"今天刹车 {sd['braked']} 次 · 引用换成找她的那条 {sd['quote_moved'] + sd['quote_added']} 次 · 去掉不该挂的引用 {sd['quote_dropped']} 次"
+        )
         return "\n".join(lines)
 
     # ───────── 面板（AstrBot WebUI → 插件 → 打开页面）─────────
@@ -463,7 +494,7 @@ class FatfishAlive(Star):
                 "enable": truthy(self.sub(n).get("enable"), True),
                 "yield": self.yield_reason(n),
             }
-            for n in ("gather", "rhythm", "budget", "guard")
+            for n in ("gather", "rhythm", "budget", "guard", "send")
         }
         return {
             "alive": {
@@ -482,6 +513,7 @@ class FatfishAlive(Star):
             "rhythm": self.rhythm.snapshot(),
             "budget": self.budget.snapshot(),
             "guard": self.guard.snapshot(),
+            "send": self.send.snapshot(),
         }
 
     async def web_state(self):

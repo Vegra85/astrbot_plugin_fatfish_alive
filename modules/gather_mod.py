@@ -12,6 +12,7 @@
 - 等完了把这几条的文字按顺序用换行拼起来、图和引用都放进这条消息里，再交给模型。
 
 活人感新增：「稍等 / 还没说完 / 等我发完」先不回（core/gather.py 的 hold_phrases）。
+v0.2.0：并完以后在 event 上记下「找她的那一条」（fatfish_ask），群里引用的时候引用它、不引用最后补的一句。
 """
 
 import copy
@@ -257,6 +258,7 @@ class GatherMod:
                 "text": text,
                 "imgs": paths,
                 "to_other": self._to_other(event),
+                "mid": str(getattr(event.message_obj, "message_id", "") or ""),
             },
         )
         if self._is_cmd(event):
@@ -396,6 +398,7 @@ class GatherMod:
             )
             return True
         st["turns"] += 1
+        event.set_extra("fatfish_ask", self._ask(mem))
         if len(mem) > 1:
             self._merge(event, m, mem, pwp)
             waited = round(max(0.0, time.time() - m.first), 1)
@@ -420,6 +423,18 @@ class GatherMod:
             )
         self._save()
         return False
+
+    @staticmethod
+    def _ask(mem):
+        """这几条里「找她的那一条」（v0.2.0，群里引用用）：最后一条直接找她的（@ / 引用 / 唤醒词）或接她话的；
+        不是最后一条消息 —— 他 @ 完随手补的一句、她自己挑着接的那条都不算。一条都没有 → {}（她自己插话，不引用）"""
+        for x in reversed(mem):
+            dd = x.data or {}
+            if x.state == "carrier" and (
+                dd.get("direct") or dd.get("kind") == "follow"
+            ):
+                return {"mid": dd.get("mid") or "", "t": x.t}
+        return {}
 
     # ───────── 把这几条并成一条 ─────────
     def _merge(self, event, m, mem, pwp):

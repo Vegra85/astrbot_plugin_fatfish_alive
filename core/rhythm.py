@@ -6,6 +6,8 @@
   先看几个信号打分 —— 紧跟着它说的、用「你」、在提问、跟它刚说的话有重合的词、是它刚回过的人、它刚点名的人、叫了它的名字；
                       中间又有别人插进来、别人刚 @ 了这个人、光发张图 就扣分
   分高 → 当成在跟它说（不用 @ 也接）；分低 → 不是；拿不准 → 让模型看一眼最近几条判断
+  认错对象（v0.2.0）：这句跟群里别人刚说的话更像 / 开头叫的是群里别人的名字 → 扣分（多半在跟那个人说）；
+                      「好几遍 / 这几天 / 几乎」里的「几」不算在问
   防止跟另一个机器人对聊停不下来：同一个人不 @ 它、它连着接最多几轮；有人 @ 它 / 10 分钟没接 就重新算
 
 在线一阵（Rhythm）：观望 → 在线（跟着聊一阵）→ 收尾潜水
@@ -65,6 +67,11 @@ DEFAULTS = {
     "closing_skip": True,  # 「好了 / 就这样 / 睡了」这类收尾句：不接话、不挑着接（借 jiehua 的思路；被 @ 照样回）
     "topic_overlap": True,  # 接话：不是它刚回的那个人、又没叫它名字、话题词没对上两个 → 扣分（借 natural_followup 的思路）
     "topic_penalty": 1.0,  # 话题词没对上两个扣几分
+    # ── （v0.2.0 新增：接话认错对象）──
+    "other_overlap": True,  # 这句跟群里别人刚说的话对上两个以上的词、又比跟它的话更像 → 扣分（多半在回那个人）
+    "other_penalty": 2.5,  # 上面这条扣几分
+    "call_other": True,  # 开头叫的是群里别人的名字（「小李来段语音」）→ 扣分（多半在跟那个人说）
+    "call_other_penalty": 4.0,  # 上面这条扣几分
 }
 
 _CJK = re.compile(r"[㐀-鿿]")
@@ -74,8 +81,10 @@ _STOP = set(
     "然后 但是 因为 所以 已经 还有 这样 那样 有点 一点 哈哈 呵呵 嘿嘿 啊啊 嗯嗯 哦哦 "
     "好的 是的 对的 还好 好吧 行吧 啊这 咱们 一样".split()
 )
+# 「几」只在真的问数量时算问：「好几遍 / 这几天 / 几乎 / 几次」不是在问（v0.2.0：「你已经说过好几遍了」被当成在问它）
 QUESTION = re.compile(
-    r"[?？]|吗|呢|啥|什么|怎么|怎样|如何|为什么|为啥|咋|哪|几|多少|是不是|有没有|行不行|好不好|能不能|要不要"
+    r"[?？]|吗|呢|啥|什么|怎么|怎样|如何|为什么|为啥|咋|哪|(?<![好这那前后头末])几(?![乎遍次回])|多少"
+    r"|是不是|有没有|行不行|好不好|能不能|要不要"
 )
 
 
@@ -143,6 +152,40 @@ def short_name(name):
 def ago(sec):
     sec = max(0, int(sec))
     return f"{sec}秒前" if sec < 60 else f"{sec // 60}分钟前"
+
+
+def other_overlap(text, after, uid, stop=()):
+    """这句跟它说完以后、群里别人（不是他自己）说的话最多对上了哪几个词 → (对上的词, 那个人的名字)。
+    只看最近 8 句；after：它说完以后的群聊（[{"uid", "name", "text"}]）"""
+    mine = bigrams(text, stop)
+    best, who = set(), ""
+    for h in (after or [])[-8:]:
+        if str(h.get("uid")) == str(uid):
+            continue
+        hit = mine & bigrams(h.get("text") or "", stop)
+        if len(hit) > len(best):
+            best, who = hit, str(h.get("name") or "")
+    return best, who
+
+
+def calls_other(text, history, uid, names=()):
+    """这句开头叫的是不是群里别人的名字（最近说过话的人，不算他自己、不算机器人）→ 那个名字 / ""。
+    名字按群名片去掉后面的数字算、至少两个字；跟机器人的名字有重叠的不算（免得把叫它当成叫别人）"""
+    lead = re.sub(r"^[@\s　]+", "", text or "")
+    if not lead:
+        return ""
+    mine = [x for x in (names or ()) if x]
+    cand = {
+        short_name(h.get("name") or "")
+        for h in history or ()
+        if h.get("role") == "user" and str(h.get("uid")) != str(uid)
+    }
+    for n in sorted(cand, key=len, reverse=True):
+        if len(n) < 2 or any(n in x or x in n for x in mine):
+            continue
+        if lead.startswith(n):
+            return n
+    return ""
 
 
 # ═════════════════════ 接话 ═════════════════════
@@ -266,6 +309,17 @@ class Followup:
             pen = float(self.c("topic_penalty"))
             s -= pen
             why.append("话题词没对上两个")
+        # 跟群里别人刚说的话对得上、比跟它的话还像 → 多半在回那个人（v0.2.0：甲说「修吧，弄好再说」，
+        # 乙接着说「你已经说过好几遍修好再说了」是冲甲的，以前它刚回过乙、句子里又有「你」，就当成在跟它说了）
+        if self.c("other_overlap"):
+            hit, by = other_overlap(text, after, uid, stop)
+            if len(hit) >= 2 and len(hit) > len(common):
+                s -= float(self.c("other_penalty"))
+                why.append(
+                    f"跟{(by or '别人')[:8]}刚说的对上了「"
+                    + "、".join(sorted(hit)[:3])
+                    + "」多半在回他"
+                )
         if dt <= 30:
             s += 1
             why.append(f"紧跟着它 {int(max(dt, 0))} 秒")
@@ -276,6 +330,11 @@ class Followup:
         if len(others) >= 2:
             s -= 1.5
             why.append(f"中间有别人插了 {len(others)} 句")
+        # 开头叫的是群里别人的名字（「小李来段语音」）→ 多半在跟那个人说（v0.2.0：以前算「它刚回的就是他 + 接了它的词」就接了）
+        callee = calls_other(text, history, uid, names) if self.c("call_other") else ""
+        if callee:
+            s -= float(self.c("call_other_penalty"))
+            why.append(f"开头叫的是「{callee[:8]}」多半在跟他说")
         if any(
             f"@{x}" in (h.get("text") or "") for h in others for x in {name, nick} if x
         ):
@@ -553,13 +612,13 @@ def chat_hint(minutes):
 PROBE_SCENE = (
     "群里刚才还在聊（你也在聊），现在突然安静了几分钟。"
     "你可以顺着刚才的话题再补一句、抛个相关的小问题、或者吐槽一句 —— 就一句，短的，像真人随口一说。"
-    f"别说「人呢」「怎么不说话了」「好安静」这种。没什么想说的就只写 {SILENT}。"
+    f"别专门去点破冷场（问大家去哪了、说群里安静）。没什么想说的就只写 {SILENT}。"
 )
 
 EXIT_SCENE = (
     "你在群里已经跟大家聊了一阵子，现在想下线 / 潜水了（去吃饭、去睡觉、去忙别的……随你，看现在几点）。"
     "自然地说一句很短的收尾话，像真人退出聊天那样，可以带一点刚才聊的内容。"
-    f"只说一句，别提问，别总结，别说「下次再聊」这种客套。不想说就只写 {SILENT}。"
+    f"只说一句，别提问，别总结，别说约下次的客套话。不想说就只写 {SILENT}。"
 )
 
 

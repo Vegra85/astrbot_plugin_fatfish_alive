@@ -145,7 +145,7 @@
 </head>
 <body>
 <h1>大肥鱼 · 活人感</h1>
-<p class="sub">攒一攒再回 + 群聊节奏 + 省 token + 兜底，合成一个插件。先看总览，细节在各个标签页。</p>
+<p class="sub">攒一攒再回 + 群聊节奏 + 省 token + 兜底 + 发消息，合成一个插件。先看总览，细节在各个标签页。</p>
 <div id="err"></div>
 <div class="tabs" id="tabs">
   <button data-tab="o">总览</button>
@@ -182,6 +182,16 @@
 </div>
 <p class="note" id="o-g-cfg"></p>
 <div class="list" id="o-g-recent" style="margin-top:8px"></div>
+
+<h2>发消息（今天）</h2>
+<div class="cards">
+  <div class="card"><b id="o-s-typed">-</b><span>按打字节奏发的轮数</span></div>
+  <div class="card"><b id="o-s-braked">-</b><span>打字刹车：没发完就停的</span></div>
+  <div class="card"><b id="o-s-moved">-</b><span>引用换成找她的那一条</span></div>
+  <div class="card"><b id="o-s-dropped">-</b><span>去掉不该挂的引用</span></div>
+</div>
+<p class="note" id="o-s-cfg"></p>
+<div class="list" id="o-s-recent" style="margin-top:8px"></div>
 
 <h2>旧存档迁移</h2>
 <p class="note" id="o-mig"></p>
@@ -676,9 +686,9 @@ window.__alive.mods.b = {render: render, setApi: function (a) { api = a; }, redr
     return Math.floor(s / 86400) + " 天前";
   };
   const sum = (o) => Object.values(o || {}).reduce((a, b) => a + (Number(b) || 0), 0);
-  const NAMES = { gather: "攒一攒", rhythm: "群聊节奏", budget: "省 token", guard: "兜底" };
+  const NAMES = { gather: "攒一攒", rhythm: "群聊节奏", budget: "省 token", guard: "兜底", send: "发消息" };
   const TABS = { gather: "g", rhythm: "r", budget: "b" };
-  const NOTE = { gather: "连着发的几条等一等、并成一次回", rhythm: "没 @ 也接话、在线聊一阵、冷场试探、收尾潜水", budget: "花得多了就少回一点；火力全开", guard: "报错不外发、空回补一次、去 <think>" };
+  const NOTE = { gather: "连着发的几条等一等、并成一次回", rhythm: "没 @ 也接话、在线聊一阵、冷场试探、收尾潜水", budget: "花得多了就少回一点；火力全开", guard: "报错不外发、空回补一次、去 <think>", send: "打字节奏、打字刹车、群里只引用找她的那一条" };
   let api = null;
 
   function status(a, name) {
@@ -726,6 +736,17 @@ window.__alive.mods.b = {render: render, setApi: function (a) { api = a; }, redr
     $("o-g-recent").innerHTML = (gd.recent || []).map((x) => '<div class="item"><span class="t">' + esc(ago(x.t)) + '</span><span class="tag">' +
       esc(KIND[x.kind] || x.kind) + "</span><span>" + esc(x.text) + '</span><span class="t">' + esc(x.why) + "</span></div>").join("") ||
       '<div class="empty">今天没触发过。</div>';
+    const sd = d.send || {}, st = sd.today || {}, sc = sd.config || {};
+    document.getElementById("o-s-typed").textContent = st.typed || 0;
+    document.getElementById("o-s-braked").textContent = st.braked || 0;
+    document.getElementById("o-s-moved").textContent = (st.quote_moved || 0) + (st.quote_added || 0);
+    document.getElementById("o-s-dropped").textContent = st.quote_dropped || 0;
+    const QM = { smart: "跟着 AstrBot 的「引用回复」（开了才管）", always: "插件自己定", off: "不管" };
+    $("o-s-cfg").textContent = "打字节奏：" + (sc.typing_human ? "开（每秒 " + sc.typing_cps + " 字，一条最多 " + sc.typing_max_sec + " 秒）" : "关（默认）") +
+      " · 打字刹车：" + (sc.typing_brake ? "开" : "关（默认）") + " · 群里引用：" + (QM[sc.quote_mode] || sc.quote_mode || "-");
+    $("o-s-recent").innerHTML = (sd.recent || []).map((x) => '<div class="item"><span class="t">' + esc(ago(x.t)) + '</span><span class="tag">刹车</span><span>' +
+      esc((x.where || "") + " " + (x.who || "")) + "：发了 " + esc(x.sent) + " 段，" + esc(x.why) + '</span><span class="t">没发：' + esc(x.left) + "</span></div>").join("") ||
+      '<div class="empty">今天没刹过车。</div>';
     const m = a.migrated;
     $("o-mig").textContent = !m ? "没有迁移记录（新装，或旁边没有旧的攒一攒 / 群聊节奏 / 省 token 存档）。" :
       "首次加载时迁移过一次：" + ((m.from || []).length ? "接上了 " + m.from.map((n) => NAMES[n] || n).join("、") + " 的旧存档（旧目录原样没动）" : "旁边没有旧存档") +

@@ -16,6 +16,7 @@ AstrBot 在群里默认只有被 @ / 唤醒才回。真人不是这样：
   - 后台每隔几秒看一眼在线的群：冷场试探 / 到点收尾（context.llm_generate + context.send_message）
 跟本插件的省 token 模块是一体的（主动说之前问 ask("extra")，自己调模型的用量记 record_usage）；认 AI 还是别的插件（装了才用）。
 活人感新增：「好了 / 就这样 / 睡了」不接；接话打分加「话题词没对上两个」一项。
+v0.2.0：接话认错对象（跟别人的话更像 / 开头叫的是别人 → 扣分；「好几遍」不算在问）；打字刹车停了一半时只记真发出去的。
 """
 
 import asyncio
@@ -545,44 +546,6 @@ class RhythmMod:
         self._save()
         return ok, f"模型说「{out[:6]}」"
 
-    async def _judge(self, umo, hist, name, text, now, names):
-        """拿不准：让模型看最近几条判断。返回 (是不是, 怎么判的)"""
-        if self.daily.today().get("judge", 0) >= int(self.conf("judge_daily_max")):
-            return False, "今天让模型判断的次数到上限了"
-        if not await self._llm_allowed(umo):
-            return False, "这个会话没开 AI（问了也不会回，不花这个钱）"
-        try:
-            pid = str(
-                self.conf("judge_provider_id") or ""
-            ).strip() or await self.context.get_current_chat_provider_id(umo)
-        except Exception as e:
-            return False, f"没有能用的模型（{e!r}"[:80] + "）"
-        self.daily.add("judge")
-        bot = names[0] if names else "机器人"
-        try:
-            resp = await asyncio.wait_for(
-                self.context.llm_generate(
-                    chat_provider_id=pid,
-                    prompt=judge_body(hist, name, text, now, bot),
-                    system_prompt=judge_system(bot),
-                ),
-                float(self.conf("judge_timeout_sec")),
-            )
-        except asyncio.TimeoutError:
-            self._save()
-            return False, f"模型 {int(self.conf('judge_timeout_sec'))} 秒没答"
-        except Exception as e:
-            self._save()
-            logger.warning(f"{TAG_F} 让模型判断失败：{e!r}"[:200])
-            return False, "模型判断出错"
-        self._budget_record(resp)
-        out = str(getattr(resp, "completion_text", "") or "").strip()
-        ok = judge_yes(out)
-        if ok:
-            self.daily.add("judge_yes")
-        self._save()
-        return ok, f"模型说「{out[:6]}」"
-
     # ───────── 要叫模型了：记下开始想的时间；接话 / 挑着接的这一轮附一句 ─────────
     def mark_busy(self, event):
         """前面的模块（攒一攒、省 token）都没拦，才算「正在回话」"""
@@ -709,6 +672,9 @@ class RhythmMod:
                 text = "[图片]"
         except Exception:
             text = ""
+        cut = event.get_extra("alive_sent_text")
+        if cut is not None:  # 打字刹车停了一半（v0.2.0）：只记真发出去的那几段
+            text = str(cut).strip()
         if not text:
             return
         gk, now = self._gk(event), time.time()
@@ -837,6 +803,7 @@ class RhythmMod:
                 logger.info(f"{TAG} 群{gid} {tag}：它正在回别人 这句不说了")
                 return
             await self.context.send_message(umo, MessageChain().message(line))
+            self.host.send.note_self(umo)  # 群里引用要知道「她中间说过话」
             t = time.time()
             hist = list(self.buf[gk])
             mine = max(
@@ -937,6 +904,8 @@ class RhythmMod:
                     "closing_skip",
                     "topic_overlap",
                     "topic_penalty",
+                    "other_overlap",
+                    "call_other",
                 )
             },
         }

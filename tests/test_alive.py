@@ -44,8 +44,8 @@ def star(name, root=None, display=None, activated=True):
 # ═══════════════ 1 配置说明 ═══════════════
 print("[1 配置说明]")
 check(
-    list(SCHEMA) == ["alive", "gather", "rhythm", "budget", "guard", "compat"],
-    "六个分组：总开关 / 攒一攒 / 群聊节奏 / 省 token / 兜底 / 兼容",
+    list(SCHEMA) == ["alive", "gather", "rhythm", "budget", "guard", "send", "compat"],
+    "七个分组：总开关 / 攒一攒 / 群聊节奏 / 省 token / 兜底 / 发消息（v0.2.0）/ 兼容",
     list(SCHEMA),
 )
 miss = [
@@ -68,7 +68,7 @@ meta = (d / "metadata.yaml").read_text(encoding="utf-8")
 check(
     "astrbot_plugin_fatfish_alive" in meta
     and "license: MIT" in meta
-    and "0.1.0" in meta,
+    and "version: v0.2.0" in meta,
     "metadata.yaml：名字 / 许可证 / 版本",
 )
 
@@ -561,6 +561,206 @@ check(
     why4,
 )
 
+# ═══════════════ 10 发消息：打字节奏 / 打字刹车 / 群里引用（v0.2.0）═══════════════
+print("\n[10 发消息：打字节奏 / 打字刹车 / 群里引用（v0.2.0）]")
+try:
+    from core import send as sd
+except ImportError as e:  # 老版本没有这个模块：下面全算没过
+    sd = None
+    check(False, "core/send.py 在", e)
+if sd is not None:
+    sch = SCHEMA["send"]["items"]
+    check(
+        set(sch) == set(sd.DEFAULTS)
+        and all(sch[k]["default"] == sd.DEFAULTS[k] for k in sch),
+        "配置说明和代码里的默认值一致",
+        [(k, sch[k].get("default"), sd.DEFAULTS.get(k)) for k in sch],
+    )
+    check(
+        sd.DEFAULTS["typing_human"] is False
+        and sd.DEFAULTS["typing_brake"] is False
+        and sch["quote_mode"]["options"] == list(sd.QUOTE_MODES)
+        and len(sch["quote_mode"]["labels"]) == 3,
+        "打字节奏 / 打字刹车默认关；引用三个选项都有中文标签",
+    )
+    c = sd.Conf({"typing_cps": "3", "quote_mode": "乱写", "typing_human": "开"})
+    check(
+        c("typing_cps") == 3.0 and c("quote_mode") == "smart" and c("typing_human"),
+        "读配置：字符串的数字能用、不认识的引用模式用默认、「开」算开",
+    )
+
+    def one(a, b):  # 假的随机：不快不慢
+        return 1.0
+
+    check(sd.chars(" 你好 [图片][[语音]]啊 ") == 3, "算字数：空白和 [标记] 不算")
+    check(
+        abs(sd.typing_delay(1, "一二三四五", uniform=one) - 2.0) < 1e-9,
+        "第二条起：字数 ÷ 每秒 2.5 个字（5 个字 2 秒）",
+    )
+    d0 = sd.typing_delay(0, "一二三四五", lead=1.0, last_in="字" * 30, uniform=one)
+    check(
+        abs(d0 - 3.0) < 1e-9,
+        "第一条：先读对方的话（30 字 → 最多 2 秒）+ 打字 2 秒 − 已经想过的 1 秒 = 3 秒",
+        d0,
+    )
+    check(
+        abs(sd.typing_delay(0, "好", lead=0, last_in="嗯", uniform=one) - 1.0) < 1e-9,
+        "读得再快也至少 0.6 秒（1 个字：0.6 + 0.4）",
+    )
+    check(
+        sd.typing_delay(0, "好", lead=30, uniform=one) == 0.6
+        and sd.typing_delay(3, "字" * 200, uniform=one) == 7.0
+        and sd.typing_delay(3, "字" * 200, max_sec=4, uniform=one) == 4.0,
+        "每条 0.6 秒到上限（默认 7 秒，可调）；想了很久的第一条也至少 0.6 秒",
+    )
+    lo = sd.typing_delay(1, "字" * 10, uniform=lambda a, b: a)
+    hi = sd.typing_delay(1, "字" * 10, uniform=lambda a, b: b)
+    check(
+        abs(lo - 10 / 2.0) < 1e-9 and abs(hi - 10 / 3.0) < 1e-9,
+        "快慢随机 ±20%（10 个字：3.3~5 秒）",
+        (lo, hi),
+    )
+
+    ears = sd.Ears()
+    K = "napcat:FriendMessage:30001"
+    rnd = {
+        "key": K,
+        "uid": "30001",
+        "name": "老王",
+        "t0": T,
+        "mids": {"m1"},
+        "heard0": 0,
+    }
+    ears.heard(K, "30001", "在吗", woke=True, t=T - 5)
+    check(ears.why(rnd) is None, "开始想之前说的不算", ears.why(rnd))
+    ears.heard(K, "30001", "嗯嗯", woke=True, t=T + 1)
+    check(ears.why(rnd) is None, "他又「嗯嗯」了一声：只是应一声，不刹车")
+    ears.heard(K, "30001", "哈哈哈哈！", woke=True, t=T + 1)
+    check(ears.why(rnd) is None, "「哈哈哈哈！」也只是应一声（不看字数）")
+    ears.heard(K, "30002", "我也问一下这个事情", woke=True, t=T + 1)
+    check(ears.why(rnd) is None, "别人说的（不是她在回的人）：不刹车（私聊里也不会有）")
+    ears.heard(K, "30001", "对了还有那个报名表怎么填", woke=True, t=T + 2)
+    w = ears.why(rnd)
+    check(
+        w and "下一轮一起回" in w and ears.why(rnd, strong=True) is None,
+        "他又说了一句正经的、会再回他：刚开打 / 两条之间刹车；打到一半（30%~80%）不刹",
+        w,
+    )
+    check(
+        sd.progress_why(ears, rnd, 0.1)
+        and sd.progress_why(ears, rnd, 0.5) is None
+        and sd.progress_why(ears, rnd, 0.9) is None,
+        "按打到哪了：<30% 停、30%~80% 只认强信号、80% 以后先打完",
+    )
+    ears.heard(K, "30001", "算了不用了", woke=True, t=T + 3)
+    w = ears.why(rnd, strong=True)
+    check(
+        w and "算了不用了" in w and sd.progress_why(ears, rnd, 0.9) is None,
+        "他说「算了 / 不用了」：打到一半也停（80% 以后还是先打完）",
+        w,
+    )
+    e2 = sd.Ears()
+    e2.heard("g", "30001", "这个我自己想想吧还是", woke=False, t=T + 2)
+    r2 = dict(rnd, key="g")
+    check(e2.why(r2) is None, "他又说了一句、但不会再回他（群里没 @）：不刹车")
+    e2.wake("g", "30001", T + 2)
+    check(
+        "下一轮一起回" in (e2.why(r2) or ""),
+        "群聊节奏判断完决定接这句（没 @ 但在接她的话）：补记成会再回他 → 刹车",
+        e2.why(r2),
+    )
+    e2.last[("g", "30001")] = (T + 2, "这个我自己想想吧还是", False)
+    e2.woke.pop(("g", "30001"))
+    e2.recall("g", "m1")
+    check(
+        e2.why(r2, strong=True) == "他把她在回的那句撤回了",
+        "他把她在回的那句撤回了：停",
+    )
+    e3 = sd.Ears()
+    r3 = dict(rnd, key="g", group=True, heard0=e3.heard_n("g"), flood=5)
+    for i in range(5):
+        e3.heard("g", f"3010{i}", f"路人第{i}句", t=T + 1)
+    check(
+        e3.why(r3) is None and "又来了 5 句" in (e3.why(r3, boundary=True) or ""),
+        "群里她打字的时候又来了 5 句：两条之间才停（打字中途不看这个）",
+        e3.why(r3, boundary=True),
+    )
+    check(
+        e3.why(dict(r3, group=False), boundary=True) is None,
+        "私聊不看「又来了几句」",
+    )
+    full = "先说第一句。然后第二句话！\n最后第三句。"
+    check(
+        sd.kept_text(full, ["先说第一句。", "然后第二句话！"])
+        == "先说第一句。然后第二句话！"
+        and sd.kept_text(full, ["先说第一句。"]) == "先说第一句。",
+        "刹车以后记进对话记录的：原文截到发出去的最后一段（标点照旧）",
+    )
+    check(
+        sd.kept_text(full, ["前缀先说第一句。", "然后第二句话！"])
+        == "前缀先说第一句。\n然后第二句话！",
+        "原文里对不上（比如加了回复前缀）：发出去的几段用换行拼起来",
+    )
+
+    TL = [(T - 9, "30001", "a1"), (T - 5, "30001", "a2")]
+    A_ = {"uid": "30001", "name": "老王", "mid": "a1"}
+    check(sd.pick_quote(False, A_, [], "好", TL) is None, "私聊不引用")
+    check(
+        sd.pick_quote(True, A_, [], "好", TL) is None,
+        "一来一回（中间只有他自己补的话）：不引用",
+    )
+    TL2 = TL + [(T - 3, "30002", "b1")]
+    check(
+        sd.pick_quote(True, A_, [], "好", TL2) == "a1",
+        "找她那条之后有别人说话：引用找她的那一条（不是他后来补的 a2）",
+    )
+    check(
+        sd.pick_quote(True, A_, [], "好", TL + [(T - 2, "self", "")]) == "a1",
+        "中间她自己说过话：也引用",
+    )
+    B_ = {"uid": "30002", "name": "小李88", "mid": "b1"}
+    check(
+        sd.pick_quote(True, A_, [B_], "好的呀", TL) == "a1",
+        "好几个人在等：一定引用（没提名字 → 引用这一轮在回的那个人）",
+    )
+    check(
+        sd.pick_quote(True, A_, [B_], "小李你说的那个我看了", TL) == "b1",
+        "好几个人在等：她这句提到谁就引用谁（群名片后面的数字去掉再比）",
+    )
+    check(
+        sd.pick_quote(True, {"uid": "30001", "name": "老王"}, [], "好", TL2) is None,
+        "她自己插话（这一轮没人找她）：不引用",
+    )
+    check(
+        sd.pick_quote(True, {"uid": "30001", "name": "老王"}, [B_], "嗯", TL2) is None,
+        "她自己插话、只有别的一个人在等：也不引用（不替别人挂）",
+    )
+    check(
+        sd.pick_quote(True, A_, [], "好", [(T, "30002", "zz")]) == "a1",
+        "找不到那条了（太早了）：引用上，免得认错",
+    )
+    asks = sd.Asks(ttl=60)
+    asks.add("g", 1, "30001", "老王", "a1", t=T)
+    asks.add("g", 2, "30002", "小李", "b1", t=T)
+    asks.add("g", 3, "30002", "小李", "b2", t=T + 1)
+    asks.add("g", 4, "30003", "阿珍", "c1", t=T - 100)
+    asks.add("g", 5, "30004", "路人", "", t=T)
+    o = asks.others("g", 1, "30001", now=T + 2)
+    check(
+        [x["mid"] for x in o] == ["b2"],
+        "在等的人：每人只算最近一条、不算自己、过期的（60 秒）和没找她的不算",
+        o,
+    )
+    asks.done("g", 2)
+    asks.done("g", 3)
+    check(asks.others("g", 1, "30001", now=T + 2) == [], "她开始回那个人了：划掉")
+    dd = sd.Daily({"day": "2000-01-01", "braked": 3})
+    check(
+        dd.today("2026-11-01")["braked"] == 0
+        and dd.add("braked", day="2026-11-01") == 1,
+        "今天的数：换天清零",
+    )
+
 # ═══════════════ 9 项目结构 ═══════════════
 print("\n[9 文件齐全]")
 need = [
@@ -579,6 +779,8 @@ need = [
     "modules/rhythm_mod.py",
     "modules/budget_mod.py",
     "modules/guard_mod.py",
+    "core/send.py",
+    "modules/send_mod.py",
     "views/panel/index.html",
 ]
 check(
@@ -590,6 +792,16 @@ html = (d / "views" / "panel" / "index.html").read_text(encoding="utf-8")
 check(
     all(x in html for x in ("总览", "攒一攒", "群聊节奏", "省 token", "兜底", "让路")),
     "面板：总览 + 三个标签 + 兜底 + 让路情况",
+)
+check(
+    "发消息" in html and "o-s-braked" in html,
+    "面板总览里有「发消息」（打字节奏 / 刹车 / 引用，v0.2.0）",
+)
+main_src = (d / "main.py").read_text(encoding="utf-8")
+check(
+    'VERSION = "0.2.0"' in main_src
+    and "## v0.2.0（2026-11-01）" in (d / "CHANGELOG.md").read_text(encoding="utf-8"),
+    "版本号 0.2.0：main.py / CHANGELOG 顶上一节",
 )
 
 ok = sum(1 for c, _ in RES if c)

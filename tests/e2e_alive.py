@@ -8,6 +8,10 @@
   3 兜底：空回补救、只有 <think> 补救、漏 <think> 去掉、接口报错不外发、客服腔（默认关，打开以后去掉）、兜底关掉就不管
   4 每个模块单独关，别的照常；总开关关掉全不管
   5 装了同类插件（假的 group_chat_plus）：重启后攒一攒、群聊节奏自动让路（面板 + 日志写明），省 token、兜底照常；强制开 / 关自动让路
+  6 发消息（v0.2.0；重启，AstrBot 打开「分段回复」（间隔 0.1~0.2 秒）和「引用回复」）：
+    引用：私聊不引用、一来一回不引用、中间有人说话引用找她的那条、两个人在等她提到谁引用谁、攒了几条引用 @ 的那条不是最后一条、她自己插话不引用；
+    打字节奏：关着跟以前一样快、开了每段按字数等（AstrBot 的分段间隔算进去）；
+    打字刹车：他又说了一句正经的 / 「算了」/ 撤回 / 群里刷屏 → 后面的不发、对话记录里只有发出去的；「哈哈哈哈」不刹
 用法：python tests/e2e_alive.py [插件目录 默认上一层] [--keep]
 """
 
@@ -106,6 +110,8 @@ async def chat_completions(request):
     system = "\n".join(text_of(m) for m in msgs if m.get("role") == "system")
     last = text_of(msgs[-1]) if msgs else ""
     first = first_text(msgs[-1]) if msgs else ""
+    if "SLOW" in first and "你在旁观一个 QQ 群" not in system:
+        await asyncio.sleep(4.0)
     if "你在旁观一个 QQ 群" in system:
         judge_calls.append({"system": system, "body": last, "t": time.time()})
         text = JUDGE["answer"]
@@ -139,6 +145,12 @@ async def chat_completions(request):
             text = "<think>偷偷想</think>漏了但有正文"
         elif "TONE" in first:
             text = "好的，我来说。希望这些对你有帮助！"
+        elif "SEGS" in first:
+            text = "第一句话说完了。第二句稍微长一点点。第三句也来了！"
+        elif "BRAKE" in first:
+            text = f"刹一开头第{len(chat_calls)}句。刹二这是第二句话。刹三接着第三句。刹四还有第四句。刹五最后一句了。"
+        elif "MENTION" in first:
+            text = "小李你说的那个我也看了。"
         else:
             text = f"收到第{len(chat_calls)}句"
     return web.json_response(
@@ -175,6 +187,7 @@ class FakeQQ:
         self.ws = None
         self.mid = 1000 + int(time.time()) % 1000 * 10
         self.sent = []
+        self.msgs = {}  # 机器人发的每一条：消息 id -> 消息段（看引用了哪条）
         self.store = {}
         self.names = {
             SELF: "胖头鱼",
@@ -224,9 +237,10 @@ class FakeQQ:
                     continue
                 act, p, echo = d["action"], d.get("params") or {}, d.get("echo")
                 data = {}
-                if act in ("send_group_msg", "send_msg"):
+                if act in ("send_group_msg", "send_msg", "send_private_msg"):
                     self.mid += 1
                     msg = p.get("message")
+                    self.msgs[self.mid] = msg if isinstance(msg, list) else []
                     text = (
                         "".join(
                             (s.get("data") or {}).get("text", "")
@@ -236,7 +250,7 @@ class FakeQQ:
                         if isinstance(msg, list)
                         else str(msg)
                     )
-                    gid = int(p.get("group_id") or 0)
+                    gid = int(p.get("group_id") or 0) or -int(p.get("user_id") or 0)
                     self.sent.append((gid, text, time.time(), self.mid))
                     self.store[self.mid] = {
                         "post_type": "message",
@@ -317,6 +331,66 @@ class FakeQQ:
         self.store[self.mid] = dict(ev)
         await self.ws.send(json.dumps(ev, ensure_ascii=False))
         return self.mid
+
+    async def say_private(self, uid, text):
+        self.mid += 1
+        ev = {
+            "post_type": "message",
+            "message_type": "private",
+            "sub_type": "friend",
+            "message_id": self.mid,
+            "user_id": uid,
+            "self_id": SELF,
+            "time": int(time.time()),
+            "message": [{"type": "text", "data": {"text": text}}],
+            "raw_message": text,
+            "font": 0,
+            "sender": {"user_id": uid, "nickname": self.names.get(uid, str(uid))},
+        }
+        self.store[self.mid] = dict(ev)
+        await self.ws.send(json.dumps(ev, ensure_ascii=False))
+        return self.mid
+
+    async def recall(self, mid, uid, gid=0):
+        ev = {
+            "post_type": "notice",
+            "notice_type": "group_recall" if gid else "friend_recall",
+            "user_id": uid,
+            "operator_id": uid,
+            "message_id": mid,
+            "self_id": SELF,
+            "time": int(time.time()),
+        }
+        if gid:
+            ev["group_id"] = gid
+        await self.ws.send(json.dumps(ev, ensure_ascii=False))
+
+    def reply_of(self, mid):
+        """机器人发的这一条引用了哪条（没引用 → None）"""
+        return next(
+            (
+                str((x.get("data") or {}).get("id"))
+                for x in self.msgs.get(mid) or []
+                if isinstance(x, dict) and x.get("type") == "reply"
+            ),
+            None,
+        )
+
+    async def wait_n(self, gid, since, n, timeout=20.0):
+        """等机器人在这里发够 n 条（或者超时）→ 发了的那几条"""
+        end = time.time() + timeout
+        while time.time() < end:
+            got = [x for x in self.sent if x[0] == gid and x[2] >= since]
+            if len(got) >= n:
+                return got
+            self.new_sent.clear()
+            try:
+                await asyncio.wait_for(
+                    self.new_sent.wait(), max(0.05, end - time.time())
+                )
+            except TimeoutError:
+                pass
+        return [x for x in self.sent if x[0] == gid and x[2] >= since]
 
     async def wait_sent(self, gid, since, timeout=15.0, has=""):
         end = time.time() + timeout
@@ -433,7 +507,7 @@ def conf(**groups):
     for g, v in BASE.items():
         c[g].update(v)
     for g, v in groups.items():
-        c[g].update(v)
+        c.setdefault(g, {}).update(v)
     return c
 
 
@@ -687,7 +761,7 @@ async def main():
         s = aiohttp.ClientSession()
         text = log_text()
         check(
-            "[活人感] v0.1.0 已启用" in text and "Traceback" not in text,
+            "[活人感] v0.2.0 已启用" in text and "Traceback" not in text,
             "AstrBot 起来了、活人感加载了、没有报错",
             text[-1500:],
         )
@@ -1129,6 +1203,259 @@ async def main():
             not mine_tb(text[text.find("第二轮") :]),
             "第二轮 AstrBot 日志里没有本插件的报错堆栈",
             mine_tb(text[text.find("第二轮") :])[:3],
+        )
+
+        # ═════════ 6 发消息：引用 / 打字节奏 / 打字刹车（v0.2.0）═════════
+        print(
+            "\n[6 发消息（v0.2.0）：重启，AstrBot 打开「分段回复」（间隔 0.1~0.2 秒）和「引用回复」]"
+        )
+        await s.close()
+        await stop(proc)
+        p = ROOT / "data" / "cmd_config.json"
+        cfg = json.loads(p.read_text(encoding="utf-8-sig"))
+        ps = cfg["platform_settings"]
+        ps["reply_with_quote"] = True
+        ps["segmented_reply"].update(
+            enable=True, interval_method="random", interval="0.1,0.2"
+        )
+        p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        log.write("\n===== 第三轮：分段回复 + 引用回复 =====\n")
+        log.flush()
+        proc, qq = await start(env, log)
+        s = aiohttp.ClientSession()
+        COMPAT = {"auto_yield": False}  # 假的 group_chat_plus 还装着：不让路
+        await set_config(s, hdr, compat=COMPAT)
+        await api_post(s, hdr, {"m": "budget", "do": "full", "hours": -1})
+        P = -A  # 跟老王的私聊（假 QQ 里私聊记成负数）
+        G5, G6, G7, G8, G9 = 7005, 7006, 7007, 7008, 7009
+
+        print("\n[6a 群里引用：默认 smart（AstrBot 开了引用回复才管）]")
+        t0 = time.time()
+        await qq.say_private(A, "SEGS 私聊一下")
+        got = await qq.wait_n(P, t0, 3)
+        check(
+            len(got) == 3
+            and [x[1] for x in got]
+            == ["第一句话说完了。", "第二句稍微长一点点。", "第三句也来了！"]
+            and all(qq.reply_of(x[3]) is None for x in got),
+            "私聊：AstrBot 分了三段发，都没挂引用（AstrBot 自己会引用私聊那条）",
+            [(x[1], qq.reply_of(x[3])) for x in got],
+        )
+        check(
+            got and got[-1][2] - got[0][2] < 1.5,
+            f"打字节奏关着（默认）：三段之间只有 AstrBot 自己的间隔（{round(got[-1][2] - got[0][2], 2) if got else '-'} 秒）",
+        )
+        t0 = time.time()
+        await qq.say(G5, A, "SEGS 一来一回", at_bot=True)
+        got = await qq.wait_n(G5, t0, 3)
+        check(
+            len(got) == 3 and qq.reply_of(got[0][3]) is None,
+            "群里只有一个人、找她那条之后没人说话（一来一回）：不挂引用",
+            [(x[1], qq.reply_of(x[3])) for x in got],
+        )
+        t0 = time.time()
+        m_ask = await qq.say(G5, A, "SLOW 有人插话", at_bot=True)
+        await asyncio.sleep(1.0)
+        await qq.say(G5, C, "我路过看看热闹")
+        got = await qq.wait_n(G5, t0, 1, timeout=20)
+        check(
+            got and qq.reply_of(got[0][3]) == str(m_ask),
+            "找她那条之后有别人说话：引用找她的那一条",
+            [(x[1], qq.reply_of(x[3])) for x in got],
+        )
+        await asyncio.sleep(1.0)
+        t0 = time.time()
+        m_a = await qq.say(G6, A, "SLOW MENTION 先问一个", at_bot=True)
+        await asyncio.sleep(0.5)
+        m_b = await qq.say(G6, B, "我也问一下这个", at_bot=True)
+        got = await qq.wait_n(G6, t0, 2, timeout=25)
+        r1 = [x for x in got if "小李你说的" in x[1]]
+        r2 = [x for x in got if x[1].startswith("收到第")]
+        check(
+            r1 and qq.reply_of(r1[0][3]) == str(m_b),
+            "两个人都在等：回老王那一轮说的是「小李你说的…」→ 引用小李那条（AstrBot 自己会引用老王那条）",
+            [(x[1], qq.reply_of(x[3]), m_a, m_b) for x in got],
+        )
+        check(
+            r2 and qq.reply_of(r2[0][3]) == str(m_b),
+            "接着回小李：她中间说过话了 → 引用小李那条",
+            [(x[1], qq.reply_of(x[3])) for x in got],
+        )
+        # 攒了几条：@ 她那条 + 她自己挑着接的那条（群聊节奏：在线、挑着接概率 1、接话关掉）→ 引用 @ 她那条，不是最后一条
+        await set_config(
+            s,
+            hdr,
+            compat=COMPAT,
+            rhythm={"reply_prob": 1.0, "min_gap_sec": 0, "follow_enable": False},
+        )
+        await turn(qq, G7, A, "热身一下", at_bot=True)
+        await asyncio.sleep(1.0)
+        nc, t0 = len(chat_calls), time.time()
+        m_q = await qq.say(G7, A, "问个正事呀", at_bot=True)
+        await asyncio.sleep(0.4)
+        await qq.say(G7, C, "吃了吗", at=B)
+        await asyncio.sleep(0.4)
+        m_last = await qq.say(G7, A, "随便说说哈")
+        got = await qq.wait_n(G7, t0, 1, timeout=20)
+        await asyncio.sleep(1.5)
+        cs = chat_calls[nc:]
+        check(
+            len(cs) == 1
+            and "问个正事呀\n随便说说哈" in cs[0]["last"]
+            and got
+            and qq.reply_of(got[0][3]) == str(m_q),
+            "攒一攒把「@ 她问个正事」和后面随手的一句并成一轮：引用 @ 她的那条（AstrBot 自己会引用最后那条）",
+            (
+                [c["last"][-80:] for c in cs],
+                [(x[1], qq.reply_of(x[3])) for x in got],
+                m_q,
+                m_last,
+            ),
+        )
+        await asyncio.sleep(1.0)
+        nk, t0 = len(kinds()), time.time()
+        await qq.say(G7, B, "今天天气真不错")
+        got = await qq.wait_n(G7, t0, 1, timeout=12)
+        ks = kinds_since(nk)
+        check(
+            got and ks and ks[-1]["kind"] == "chat" and qq.reply_of(got[0][3]) is None,
+            "她自己挑着接的（没人找她）：不挂引用",
+            (ks, [(x[1], qq.reply_of(x[3])) for x in got]),
+        )
+        await set_config(s, hdr, compat=COMPAT, send={"quote_mode": "off"})
+        t0 = time.time()
+        m = await qq.say(G5, A, "SEGS 不管引用", at_bot=True)
+        got = await qq.wait_n(G5, t0, 3)
+        check(
+            got and qq.reply_of(got[0][3]) == str(m),
+            "引用改成「不管」：跟 AstrBot 原来一样（一来一回也挂引用）",
+            [(x[1], qq.reply_of(x[3])) for x in got],
+        )
+
+        print("\n[6b 打字节奏（开）]")
+        await set_config(s, hdr, compat=COMPAT, send={"typing_human": True})
+        nc, t0 = len(chat_calls), time.time()
+        await qq.say_private(A, "SEGS 打字")
+        got = await qq.wait_n(P, t0, 3, timeout=30)
+        t_llm = chat_calls[nc]["t"] if len(chat_calls) > nc else t0
+        gaps = [round(got[i + 1][2] - got[i][2], 2) for i in range(len(got) - 1)]
+        first = round(got[0][2] - t_llm, 2) if got else 0
+        # 第一段 8 个字、第二段 10 个字、第三段 7 个字；每秒 2.5 字 ±20%；第一段先读 0.6 秒
+        check(
+            len(got) == 3
+            and 0.6 + 8 / 3.0 - 0.3 <= first <= 0.6 + 8 / 2.0 + 1.2
+            and 10 / 3.0 - 0.2 <= gaps[0] <= 10 / 2.0 + 0.8
+            and 7 / 3.0 - 0.2 <= gaps[1] <= 7 / 2.0 + 0.8,
+            f"每段按字数「打」：第一段 {first} 秒（读 0.6 + 打 2.7~4）、之后 {gaps} 秒（4 秒左右、2.8 秒左右；AstrBot 的间隔算在里面）",
+            (first, gaps),
+        )
+        check(
+            all(qq.reply_of(x[3]) is None for x in got),
+            "私聊照样不挂引用（引用回到默认 smart）",
+        )
+
+        print("\n[6c 打字刹车（开）]")
+        await set_config(
+            s, hdr, compat=COMPAT, send={"typing_human": True, "typing_brake": True}
+        )
+        nc, t0 = len(chat_calls), time.time()
+        await qq.say_private(A, "BRAKE 讲个长的")
+        got = await qq.wait_n(P, t0, 1, timeout=20)
+        await qq.say_private(A, "那我换个问题问你")
+        await asyncio.sleep(9.0)
+        sent = [x[1] for x in qq.sent if x[0] == P and x[2] >= t0]
+        nxt = [c for c in chat_calls[nc:] if "那我换个问题问你" in c["last"]]
+        hist = "\n".join(text_of(m) for m in nxt[0]["messages"][:-1]) if nxt else ""
+        check(
+            got
+            and sent[0].startswith("刹一")
+            and not any(x.startswith("刹二") for x in sent)
+            and any(x.startswith("收到第") for x in sent),
+            "第一段发出去以后他又说了一句正经的：后面四段不发了，接着回他新说的",
+            sent,
+        )
+        check(
+            nxt and "刹一开头" in hist and "刹二" not in hist,
+            "对话记录里只有发出去的那段（下一轮她知道自己没说完）",
+            hist[-300:],
+        )
+        check("[刹车]" in log_text(), "日志里有 [刹车]")
+        await asyncio.sleep(2.0)
+        t0 = time.time()
+        await qq.say_private(A, "BRAKE 再讲一个")
+        got = await qq.wait_n(P, t0, 1, timeout=20)
+        await qq.say_private(A, "哈哈哈哈")
+        got = await qq.wait_n(P, t0, 6, timeout=40)
+        sent = [x[1] for x in got]
+        check(
+            sum(1 for x in sent if x[:2] in ("刹一", "刹二", "刹三", "刹四", "刹五"))
+            == 5,
+            "他只「哈哈哈哈」了一声：不刹车，五段都发完",
+            sent,
+        )
+        await asyncio.sleep(3.0)
+        t0 = time.time()
+        m_rc = await qq.say_private(A, "BRAKE 撤回测试")
+        got = await qq.wait_n(P, t0, 1, timeout=20)
+        await qq.recall(m_rc, A)
+        await asyncio.sleep(6.0)
+        sent = [x[1] for x in qq.sent if x[0] == P and x[2] >= t0]
+        check(
+            got and len(sent) == 1 and sent[0].startswith("刹一"),
+            "他把她在回的那句撤回了：后面的不发了（撤回不算他又说了一句，也不会再回）",
+            sent,
+        )
+        t0 = time.time()
+        await qq.say(G8, A, "BRAKE 群里讲", at_bot=True)
+        got = await qq.wait_n(G8, t0, 1, timeout=20)
+        await qq.say(G8, A, "算了")
+        await asyncio.sleep(6.0)
+        sent = [x[1] for x in qq.sent if x[0] == G8 and x[2] >= t0]
+        check(
+            got
+            and sent[0].startswith("刹一")
+            and not any(x.startswith("刹二") for x in sent),
+            "群里他说「算了」（没 @ 她）：后面的不发了",
+            sent,
+        )
+        t0 = time.time()
+        await qq.say(G9, B, "BRAKE 刷屏", at_bot=True)
+        got = await qq.wait_n(G9, t0, 1, timeout=20)
+        for i, u in enumerate((A, C, AI, 30004, 30005)):
+            await qq.say(G9, u, f"路人第{i}句路过")
+            await asyncio.sleep(0.1)
+        await asyncio.sleep(12.0)
+        sent = [x[1] for x in qq.sent if x[0] == G9 and x[2] >= t0]
+        check(
+            got
+            and 1 <= len([x for x in sent if x.startswith("刹")]) <= 2
+            and not any(x.startswith(("刹三", "刹四", "刹五")) for x in sent),
+            "群里她打字的时候又来了 5 句：两段之间停下（正在打的那段打完）",
+            sent,
+        )
+        code, st = await api_get(s, hdr)
+        sd = st.get("send") or {}
+        td = sd.get("today") or {}
+        check(
+            td.get("braked", 0) >= 4
+            and td.get("quote_dropped", 0) >= 2
+            and td.get("quote_moved", 0) >= 2
+            and len(sd.get("recent") or []) >= 4
+            and (st["alive"]["modules"].get("send") or {}).get("on"),
+            "面板：发消息模块开着；今天刹车 / 去掉引用 / 换引用的数、最近几次刹车",
+            (td, (sd.get("recent") or [])[:2]),
+        )
+        said, _, _ = await turn(qq, G1, ADMIN, "/活人感")
+        check(
+            said and "发消息" in said[0] and "打字刹车开" in said[0],
+            "/活人感 里有发消息这一行",
+            said,
+        )
+        text = log_text()
+        check(
+            not mine_tb(text[text.find("第三轮") :]),
+            "第三轮 AstrBot 日志里没有本插件的报错堆栈",
+            mine_tb(text[text.find("第三轮") :])[:3],
         )
     finally:
         if s is not None:

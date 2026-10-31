@@ -1,8 +1,8 @@
 name: astrbot_plugin_fatfish_alive
 display_name: 大肥鱼 · 活人感
-desc: 让机器人在聊天里像真人：连着发的几条等一等只回一次（攒一攒，「稍等 / 还没说完」先不回）；群里没 @ 也能接上话、说上话后在线聊一阵、冷场试探、到点收尾，「好了 / 就这样 / 睡了」不接（群聊节奏）；花得越多回得越少（省 token，管理员可「火力全开」）；框架报错不发出去、只有 <think> 就补一句、可选去掉客服腔（兜底）。装了 group_chat_plus / SpectreCore / Heartflow / natural_followup / jiehua 任何一个，节奏和攒一攒自动让路，只保留省 token 和兜底。一个面板看全部。
-short_desc: 攒一攒 + 群聊节奏 + 省 token + 兜底，装了同类插件自动让路
-version: v0.1.0
+desc: 让机器人在聊天里像真人：连着发的几条等一等只回一次（攒一攒，「稍等 / 还没说完」先不回）；群里没 @ 也能接上话、说上话后在线聊一阵、冷场试探、到点收尾，「好了 / 就这样 / 睡了」不接（群聊节奏）；花得越多回得越少（省 token，管理员可「火力全开」）；框架报错不发出去、只有 <think> 就补一句、可选去掉客服腔（兜底）。可选打字节奏（按字数慢慢发）和打字刹车（分段发到一半对方又说话了就不往下发）；群里只引用找它的那一条（发消息）。装了 group_chat_plus / SpectreCore / Heartflow / natural_followup / jiehua 任何一个，节奏和攒一攒自动让路，只保留省 token 和兜底。一个面板看全部。
+short_desc: 攒一攒 + 群聊节奏 + 省 token + 兜底 + 打字节奏，装了同类插件自动让路
+version: v0.2.0
 author: Vegra85
 repo: https://github.com/Vegra85/astrbot_plugin_fatfish_alive
 license: MIT

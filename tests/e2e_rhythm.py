@@ -621,7 +621,7 @@ async def main():
         text = log_text()
         check(
             PNAME in text
-            and "[活人感] v0.1.0 已启用" in text
+            and "[活人感] v0.2.0 已启用" in text
             and "Traceback" not in text,
             "AstrBot 起来了、插件加载了、没有报错",
             text[-1500:],
@@ -1025,6 +1025,51 @@ async def main():
             (got, dec[:1]),
         )
         JUDGE["answer"], JUDGE["delay"] = "不是", 0.0
+
+        print("\n[第二段：接话认错对象（v0.2.0）]")
+        ok, _, _ = await turn(qq, G4, C, "在吗", at_bot=True)
+        ok1, _, _ = await turn(qq, G4, B, "修吧，弄好再说", expect=False)
+        nj = len(judge_calls)
+        ok2, _, ks2 = await turn(qq, G4, C, "你已经说过好几遍修好再说了", expect=False)
+        st_code, d = await api_get(s, hdr, "state")
+        dec = ((d or {}).get("data") or {}).get("decisions") or []
+        d0 = dec[0] if dec else {}
+        check(
+            ok
+            and not ok1
+            and not ok2
+            and not ks2
+            and d0.get("who") == "阿珍"
+            and "多半在回他" in d0.get("why", "")
+            and "在问" not in d0.get("why", "")
+            and d0.get("verdict") == "model_no"
+            and len(judge_calls) == nj + 1,
+            "它刚回过阿珍，阿珍接着说「你已经说过好几遍修好再说了」（是冲小李那句的）：不算在问、扣分、交给模型看，模型说不是 → 不接（以前直接接）",
+            (ok, ok1, ok2, ks2, d0, len(judge_calls) - nj),
+        )
+        ok, _, _ = await turn(qq, G4, C, "我回来了", at_bot=True)
+        await turn(qq, G4, B, "我也在", expect=False)
+        nj = len(judge_calls)
+        ok2, _, ks2 = await turn(qq, G4, C, "小李你来段语音吧", expect=False)
+        st_code, d = await api_get(s, hdr, "state")
+        dec = ((d or {}).get("data") or {}).get("decisions") or []
+        d0 = dec[0] if dec else {}
+        check(
+            ok
+            and not ok2
+            and not ks2
+            and "开头叫的是「小李」多半在跟他说" in d0.get("why", "")
+            and d0.get("verdict") == "no"
+            and len(judge_calls) == nj,
+            "阿珍开头叫的是小李（「小李你来段语音吧」）：不当成跟它说（以前算「它刚回的就是他」+「你」就接了）",
+            (ok, ok2, ks2, d0),
+        )
+        ok3, _, ks3 = await turn(qq, G4, C, "你刚才说的啥意思")
+        check(
+            ok3 and ks3 and ks3[-1]["kind"] == "follow",
+            "同一个人接着跟它说（没叫别人）：照样接",
+            ks3,
+        )
 
         # ═════════ 第三段：冷场试探 / 收尾 ═════════
         print("\n[第三段：时间参数调小，冷场试探 / 到点收尾 / 收尾冷却]")

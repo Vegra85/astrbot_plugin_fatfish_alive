@@ -564,6 +564,91 @@ check(
     wh,
 )
 
+print("\n[12 接话认错对象（v0.2.0）]")
+Q = rc.QUESTION
+check(
+    not any(
+        Q.search(x)
+        for x in ("你已经说过好几遍了", "这几天好忙", "几乎没人", "试了几次", "前几回")
+    ),
+    "「好几遍 / 这几天 / 几乎 / 几次 / 前几回」的「几」不算在问",
+)
+check(
+    all(Q.search(x) for x in ("现在几点", "你几岁", "要几个", "几号去")),
+    "「几点 / 几岁 / 几个 / 几号」照样算在问",
+)
+fx = rc.Followup(conf(topic_overlap=False))
+fx.note_turn("g", "收到第3句", [A], t0=T - 12, sent=T - 10)
+v, why, s = fx.check("g", A, "老王", "你已经说过好几遍修好再说了", T, [])
+check(
+    "在问" not in why and s == 5.0 and v == "yes",
+    "「你已经说过好几遍…」不再加「在问」那 1 分（6 → 5）",
+    (v, why, s),
+)
+hist = [user(B, "小李", "修吧，弄好再说", T - 6)]
+v, why, s = fx.check("g", A, "老王", "你已经说过好几遍修好再说了", T, hist)
+check(
+    "跟小李刚说的对上了「再说、好再」多半在回他" in why and s == 2.5 and v == "ask",
+    "跟别人刚说的话对上两个词、比跟它的多 → 扣 2.5（5 → 2.5，交给模型看）",
+    (v, why, s),
+)
+fx.note_turn("g", "修好再说吧", [A], t0=T - 12, sent=T - 10)
+v, why, s = fx.check("g", A, "老王", "你已经说过好几遍修好再说了", T, hist)
+check(
+    "多半在回他" not in why and v == "yes",
+    "跟它的话对上的一样多（或更多）：不扣",
+    (v, why, s),
+)
+fx.note_turn("g", "收到第3句", [A], t0=T - 12, sent=T - 10)
+old_hist = [user(B, "小李", "修吧，弄好再说", T - 30)]
+v, why, s = fx.check("g", A, "老王", "你已经说过好几遍修好再说了", T, old_hist)
+check(
+    "多半在回他" not in why,
+    "别人那句是在它说话之前说的（不是这一轮的）：不算",
+    why,
+)
+mine_hist = [user(A, "老王", "修吧，弄好再说", T - 6)]
+v, why, s = fx.check("g", A, "老王", "你已经说过好几遍修好再说了", T, mine_hist)
+check("多半在回他" not in why, "对上的是他自己刚说的：不算", why)
+fo = rc.Followup(conf(topic_overlap=False, other_overlap=False))
+fo.note_turn("g", "收到第3句", [A], t0=T - 12, sent=T - 10)
+v, why, s = fo.check("g", A, "老王", "你已经说过好几遍修好再说了", T, hist)
+check("多半在回他" not in why and s == 5.0, "关掉 other_overlap：不扣", (why, s))
+
+hist = [user(B, "小李", "我也在", T - 30), user(C, "阿珍123", "哈哈", T - 40)]
+v, why, s = fx.check("g", A, "老王", "小李你来段语音吧", T, hist)
+check(
+    "开头叫的是「小李」多半在跟他说" in why and v == "no" and s == 1.0,
+    "开头叫的是群里别人的名字 → 扣 4 分（5 → 1，不接）",
+    (v, why, s),
+)
+v, why, s = fx.check("g", A, "老王", "@阿珍 你来段语音吧", T, hist)
+check(
+    "开头叫的是「阿珍」" in why,
+    "名字前面的 @ / 空格去掉再看；群名片后面的数字去掉再比",
+    why,
+)
+v, why, s = fx.check("g", A, "老王", "你跟小李说一声", T, hist)
+check("开头叫的是" not in why, "名字在中间（不是开头叫人）：不算", why)
+hb = [user(B, "胖头鱼粉丝", "我也在", T - 30)]
+v, why, s = fx.check("g", A, "老王", "胖头鱼粉丝你来段语音吧", T, hb, names=["胖头鱼"])
+check("开头叫的是" not in why, "跟机器人名字有重叠的名字：不算叫别人", why)
+v, why, s = fx.check(
+    "g", A, "老王", "老王我自己来吧", T, [user(A, "老王", "嗯", T - 30)]
+)
+check("开头叫的是" not in why, "叫的是他自己的名字：不算", why)
+fc = rc.Followup(conf(topic_overlap=False, call_other=False))
+fc.note_turn("g", "收到第3句", [A], t0=T - 12, sent=T - 10)
+v, why, s = fc.check("g", A, "老王", "小李你来段语音吧", T, hist)
+check("开头叫的是" not in why and v == "yes", "关掉 call_other：不扣", (v, why))
+check(
+    rc.other_overlap("修好再说", [user(B, "小李", "弄好再说", T)], A)
+    == ({"好再", "再说"}, "小李")
+    and rc.calls_other("  小李在吗", [user(B, "小李", "x", T)], A) == "小李"
+    and rc.calls_other("", [user(B, "小李", "x", T)], A) == "",
+    "两个小函数单独用也对",
+)
+
 print("\n[10 今天的数]")
 dd = rc.Daily({"day": "2000-01-01", "follow": 9})
 check(
