@@ -377,6 +377,274 @@ async def scenario_aside():
     )
 
 
+async def scenario_tail():
+    print("\n[12 尾巴含糊才问 / 他还在输入（v0.3.0）]")
+    tv = G.tail_vague
+    check(
+        all(
+            tv(x)
+            for x in (
+                "那个",
+                "我想问一下，",
+                "然后",
+                "好吧…",
+                "啊这...",
+                "主要是三点：",
+                "1. 先说这个",
+                "还有",
+            )
+        ),
+        "尾巴含糊：那个 / 然后 / 还有、逗号、省略号、冒号、列举到一半（有 1. 没 2.）",
+    )
+    check(
+        not any(
+            tv(x)
+            for x in (
+                "你好",
+                "在吗",
+                "这个怎么弄？",
+                "[图片]",
+                "1. 先说 2. 后说",
+                "然后呢？",
+                "我说完了。",
+                "",
+            )
+        ),
+        "不含糊：说完的话、问句、只有图、列举完了、空的",
+    )
+    T = dict(FAST, tail_ask=False, tail_extra_sec=0.4)
+    g = G.Gatherer(T)
+    t0 = time.time()
+    r = await g.hold(await carrier(g, "t|1", "我想问一下，"))
+    took = time.time() - t0
+    check(
+        r[0] == "go" and 0.6 <= took <= 1.0,
+        f"尾巴含糊、不问模型：基础 0.3 + 固定多等 0.4（这次 {took:.2f} 秒）",
+        took,
+    )
+    g = G.Gatherer(dict(T, tail_vague=False))
+    t0 = time.time()
+    r = await g.hold(await carrier(g, "t|1", "我想问一下，"))
+    check(time.time() - t0 < 0.5, "「尾巴含糊多看一眼」关了：跟以前一样只等基础时间")
+    asked = []
+
+    async def asker(m, mem):
+        asked.append([x.line for x in mem])
+        return ANS["n"]
+
+    ANS = {"n": 0.5}
+    g = G.Gatherer(FAST)
+    g.asker = asker
+    t0 = time.time()
+    r = await g.hold(await carrier(g, "t|2", "然后"))
+    took = time.time() - t0
+    check(
+        r[0] == "go" and len(asked) == 1 and asked[0] == ["然后"],
+        "尾巴含糊 → 问一次（只给他这一串话）",
+        asked,
+    )
+    check(
+        0.75 <= took <= 1.2,
+        f"模型说再等 0.5 秒：基础 0.3 + 0.5（这次 {took:.2f} 秒）",
+        took,
+    )
+    check(
+        getattr(r[1][-1], "more", {}).get("asked") == 1
+        and r[1][-1].more.get("tail_waits") == 1,
+        "记下了：问了 1 次、多等了 1 次",
+    )
+    ANS["n"] = 0
+    asked.clear()
+    t0 = time.time()
+    r = await g.hold(await carrier(g, "t|3", "但是"))
+    check(len(asked) == 1 and time.time() - t0 < 0.55, "模型说「说完了」（0）：不多等")
+    asked.clear()
+    t0 = time.time()
+    r = await g.hold(await carrier(g, "t|3b", "就是这样。"))
+    check(not asked and time.time() - t0 < 0.5, "尾巴不含糊：不问")
+
+    async def boom(m, mem):
+        raise RuntimeError("模型挂了")
+
+    g2 = G.Gatherer(FAST)
+    g2.asker = boom
+    t0 = time.time()
+    r = await g2.hold(await carrier(g2, "t|4", "那个"))
+    check(r[0] == "go" and time.time() - t0 < 0.7, "问的时候出错：当成说完了（不卡住）")
+    ANS["n"] = 0.35
+    asked.clear()
+    g = G.Gatherer(FAST)
+    g.asker = asker
+    m1 = await carrier(g, "t|5", "首先")
+    h = asyncio.ensure_future(g.hold(m1))
+    await asyncio.sleep(0.45)
+    q = g.note("t|5")
+    g.fill(q, "还有", state="quiet")
+    await asyncio.sleep(0.5)
+    q2 = g.note("t|5")
+    g.fill(q2, "而且", state="quiet")
+    r = await h
+    check(
+        r[0] == "go" and lines(r[1]) == ["首先", "还有", "而且"],
+        "等的时候他接着发：并进来（整个重新算）",
+        r,
+    )
+    check(len(asked) == 2, "一轮最多问 2 次（第三句又含糊也不再问）", asked)
+    g = G.Gatherer(FAST)
+    g.asker = asker
+    asked.clear()
+    r = await g.hold(await carrier(g, "t|6", "稍等"))
+    check(not asked, "「稍等」走自己的规则（多等一阵），不另外问")
+    asked.clear()
+    r = await g.hold(await carrier(g, "t|7", "", pic=True))
+    check(not asked, "最后一条只有图：不问")
+    ANS["n"] = 100
+    g = G.Gatherer(FAST)
+    m = g.note("t|8")
+    g.fill(m, "那个")
+    m.state = "carrier"
+    g.asker = asker
+    n = await g._more(g.piles["t|8"], m, {})
+    check(n == G.TAIL_MAX_SEC, f"模型说等 100 秒：最多等 {G.TAIL_MAX_SEC:g} 秒", n)
+    typing = {"until": 0}
+    g = G.Gatherer(dict(FAST, typing_extra_sec=0.6))
+    g.typing = lambda m: time.time() < typing["until"]
+    typing["until"] = time.time() + 0.35
+    t0 = time.time()
+    r = await g.hold(await carrier(g, "p|9", "我跟你讲"))
+    took = time.time() - t0
+    check(
+        r[0] == "go" and 0.3 <= took <= 1.6 and r[1][-1].more.get("typed"),
+        f"私聊他还在输入：多等了一会儿（这次 {took:.2f} 秒）",
+        took,
+    )
+    typing["until"] = time.time() + 99
+    t0 = time.time()
+    r = await g.hold(await carrier(g, "p|10", "我跟你讲"))
+    took = time.time() - t0
+    check(
+        r[0] == "go" and took <= 1.2,
+        f"一直显示在输入：最多多等 typing_extra_sec（0.6 秒）就回（这次 {took:.2f} 秒）",
+        took,
+    )
+    g = G.Gatherer(dict(FAST, typing_wait=False, typing_extra_sec=0.6))
+    g.typing = lambda m: True
+    t0 = time.time()
+    r = await g.hold(await carrier(g, "p|11", "我跟你讲"))
+    check(time.time() - t0 < 0.5, "「他还在输入多等」关了：不等")
+
+
+async def scenario_recall():
+    print("\n[13 还排着没回、他撤回了（v0.4.0）]")
+    g = G.Gatherer(dict(FAST, base_sec=0.6, short_extra_sec=0.0, quick_sec=0.6))
+    if not hasattr(g, "recall"):  # 旧代码（v0.3.0）没有这一步：撤回了照样回
+        check(
+            False,
+            "攒一攒认得撤回（Gatherer.recall）",
+            "旧代码：没有 recall，撤回的那条照样并进来回",
+        )
+        return
+
+    async def msg(key, line, mid, state="new"):
+        m = g.note(key)
+        g.fill(m, line, data={"mid": mid}, state=state)
+        return m
+
+    # 1 私聊只发了一条、在等的时候撤回了 → 这一轮不回，而且马上就结束（不用等满）
+    m = await msg("p|21", "帮我查个东西", "a1")
+    t0 = time.time()
+    h = asyncio.ensure_future(g.hold(m))
+    await asyncio.sleep(0.1)
+    x = g.recall("p|21", "a1")
+    r = await h
+    check(
+        x is m and r == ("recalled", []) and time.time() - t0 < 0.4,
+        "排着的只有那一条、他撤回了：这一轮不回（马上结束，不等满）",
+        (r, time.time() - t0),
+    )
+    check(
+        await g.hold(m) == ("dup", []), "这条后来又来叫模型（AstrBot 重试这种）：不回"
+    )
+
+    # 2 私聊连发两条、在等的那条（后一条）撤回了 → 只回前一条
+    m1 = await msg("p|22", "在吗", "b1")
+    h1 = asyncio.ensure_future(g.hold(m1))
+    await asyncio.sleep(0.05)
+    m2 = await msg("p|22", "问你个事情好不好呀", "b2")
+    h2 = asyncio.ensure_future(g.hold(m2))
+    await asyncio.sleep(0.1)
+    g.recall("p|22", "b2")
+    r1, r2 = await h1, await h2
+    check(
+        r1 == ("handoff", []) and r2[0] == "go" and lines(r2[1]) == ["在吗"],
+        "连发两条、他把后一条撤回了：前一条让过位，这一轮只回前一条",
+        (r1, r2),
+    )
+
+    # 3 群里 @ 的那条撤回了、剩下的是他没 @ 的随口话 → 不回；随口话不标成回过
+    m1 = await msg("g|23", "大头鲢你看这个", "c1")
+    h = asyncio.ensure_future(g.hold(m1))
+    await asyncio.sleep(0.05)
+    q = await msg("g|23", "哈哈哈", "c2", state="quiet")
+    await asyncio.sleep(0.05)
+    g.recall("g|23", "c1")
+    r = await h
+    check(
+        r == ("recalled", []) and not q.consumed,
+        "群里 @ 的那条撤回了、剩下的只是没 @ 的随口话：不回（随口话不标成回过，后面有人 @ 还能并）",
+        (r, q.consumed),
+    )
+
+    # 4 群里 @ 以后补的随口话撤回了 → 照常回 @ 的那条，不带撤回的
+    m1 = await msg("g|24", "大头鲢帮我看看", "d1")
+    h = asyncio.ensure_future(g.hold(m1))
+    await asyncio.sleep(0.05)
+    await msg("g|24", "发错了这个别看", "d2", state="quiet")
+    await asyncio.sleep(0.05)
+    g.recall("g|24", "d2")
+    r = await h
+    check(
+        r[0] == "go" and lines(r[1]) == ["大头鲢帮我看看"],
+        "补的那句撤回了：照常回 @ 的那条，撤回的不并进来",
+        r,
+    )
+
+    # 5 撤回通知比内容先到（外壳记着，内容到了 recall_msg）→ 它来叫模型时不回
+    m = g.note("p|25")
+    g.fill(m, "这条后来撤回了", data={"mid": "e1"})
+    check(
+        g.recall_msg(m) and m.state == "recalled", "撤回通知先到：内容一到就记成撤回了"
+    )
+    check(await g.hold(m) == ("recalled", []), "它来叫模型：不回")
+
+    # 6 已经交给模型的那条撤回了：这里不管（发消息那一块管）
+    m = await msg("p|26", "好的", "f1")
+    r = await g.hold(m)
+    check(
+        r[0] == "go" and g.recall("p|26", "f1") is None and m.state == "carrier",
+        "已经交给模型了：攒一攒这边不动（叫停归发消息那一块）",
+        (r, m.state),
+    )
+
+    # 7 开关关了：撤回不管（跟以前一样）
+    g2 = G.Gatherer(dict(FAST, recall_drop=False))
+    m = g2.note("p|27")
+    g2.fill(m, "我想问", data={"mid": "h1"})
+    h = asyncio.ensure_future(g2.hold(m))
+    await asyncio.sleep(0.05)
+    x = g2.recall("p|27", "h1")
+    r = await h
+    check(
+        x is None and r[0] == "go" and lines(r[1]) == ["我想问"],
+        "「还排着没回、他撤回了」关掉：照样回（跟以前一样）",
+        r,
+    )
+    check(
+        G.DEFAULTS.get("recall_drop") is True and g2.recall_msg(m) is False,
+        "默认开；关了以后 recall_msg 也不动",
+    )
+
+
 async def main():
     await scenario_private()
     await scenario_group()
@@ -384,6 +652,8 @@ async def main():
     await scenario_settle()
     await scenario_misc()
     await scenario_aside()
+    await scenario_tail()
+    await scenario_recall()
 
 
 asyncio.run(main())

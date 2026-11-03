@@ -10,8 +10,11 @@ AstrBot 发一轮回话的顺序（4.29，从源码里对的：pipeline/result_d
   - 打字刹车：两段之间、补等的时候看一眼对方又说了什么（core/send.Ears），该停就不往下发了；
     已经发的才算她说过的：AstrBot 马上要存进对话记录的那句回话，改成只到发出去的那段为止（下一轮她知道自己没说完）；
   - 引用：第一段发出去之前，把 AstrBot 插的那个 Reply 换成「找她的那一条」（core/send.pick_quote），该不引用的就去掉。
+  - 叫停（v0.4.0，默认开）：每一段发之前（第一段也算）、补等的时候都看一眼 —— 他把她在回的那句撤回了，
+    或者又明确说了「算了 / 不用了 / 别说了」→ 这段和后面的都不发（第一段已经发出去了也一样）；
+    对话记录：发出去几段就只留几段；一段都没发 → 这一轮（他那句 + 没发的回话）都不进对话记录（AstrBot 自己遇到空回也是这样）。
 after_message_sent（最高优先级）把 event.send 换回去，别的插件在这之后发的话不受影响。
-三样都关着 / 流式输出 / 不是模型的回话（指令回复、别的插件发的）→ 不上弦，跟以前完全一样。
+四样都关着 / 流式输出 / 不是模型的回话（指令回复、别的插件发的）→ 不上弦，跟以前完全一样。
 """
 
 import asyncio
@@ -34,6 +37,7 @@ from ..core.send import (
 
 TAG = "[发消息]"
 TAG_B = "[刹车]"
+TAG_H = "[叫停]"
 RECALL = ("group_recall", "friend_recall")
 
 
@@ -100,13 +104,38 @@ class SendMod:
             text = (event.message_str or "").strip()
             now = time.time()
             event.set_extra("alive_heard_t", now)
-            self.ears.heard(key, uid, text, woke=self._woke(event, text), t=now)
+            self.ears.heard(
+                key,
+                uid,
+                text,
+                woke=self._woke(event, text),
+                t=now,
+                to_other=self._to_other(event),
+            )
             if event.get_group_id():
                 self.timeline[key].append(
                     (now, uid, str(getattr(event.message_obj, "message_id", "") or ""))
                 )
         except Exception as e:  # noqa: BLE001  这一层出错不能连累 AstrBot 发消息
             logger.debug(f"{TAG} 记消息出错：{e!r}")
+
+    @staticmethod
+    def _to_other(event):
+        """（v0.4.0）@ 了别人、或者引用的是别人的话：在跟那个人说（他这时候说「算了」不是叫她停）"""
+        try:
+            sid, uid = str(event.get_self_id() or ""), str(event.get_sender_id() or "")
+            for c in event.get_messages() or []:
+                if isinstance(c, Comp.At):
+                    q = str(getattr(c, "qq", "") or "")
+                    if q and q not in (sid, "all"):
+                        return True
+                elif isinstance(c, Comp.Reply):
+                    q = str(getattr(c, "sender_id", "") or "")
+                    if q and q not in ("0", sid, uid):
+                        return True
+        except Exception:  # noqa: BLE001  这一层出错不能连累 AstrBot 发消息
+            pass
+        return False
 
     @staticmethod
     def _woke(event, text):
@@ -178,8 +207,8 @@ class SendMod:
             if res is None or not res.chain or not res.is_llm_result():
                 return  # 流式输出、指令回复、别的插件发的话：不管
             typing, brake = self.conf("typing_human"), self.conf("typing_brake")
-            mode = self.conf("quote_mode")
-            if not (typing or brake or mode != "off"):
+            mode, halt = self.conf("quote_mode"), self.conf("halt")
+            if not (typing or brake or halt or mode != "off"):
                 return
             if "send" in event.__dict__ and event.get_extra("alive_send"):
                 return  # 已经上过弦了
@@ -187,7 +216,13 @@ class SendMod:
             now = time.time()
             t_req = event.get_extra("alive_t_req")
             key = event.unified_msg_origin
-            mids = {str(getattr(event.message_obj, "message_id", "") or "")}
+            # 她在回的那几条：一般就是这条；攒一攒里最后那条他撤回了、只回前面几条的（v0.4.0）→ 攒一攒记下的那几条
+            fm = event.get_extra("fatfish_mids")
+            mids = (
+                {str(x) for x in fm if x}
+                if isinstance(fm, (list, tuple)) and fm
+                else {str(getattr(event.message_obj, "message_id", "") or "")}
+            )
             ask = event.get_extra("alive_ask") or {}
             if ask.get("mid"):
                 mids.add(str(ask["mid"]))
@@ -200,6 +235,9 @@ class SendMod:
                 "sent": [],
                 "dropped": [],
                 "braked": None,
+                "halted": None,  # （v0.4.0）叫停的原因
+                "halt_rec": None,
+                "halt": halt,
                 "typing": typing,
                 "brake": brake,
                 "quote": mode,
@@ -239,11 +277,16 @@ class SendMod:
         except Exception:  # noqa: BLE001  这一层出错不能连累 AstrBot 发消息
             comps = []
         text = _plain(comps)
-        if st["braked"]:  # 刹过车了：后面的都不发
+        if st["braked"] or st["halted"]:  # 刹过车 / 叫停了：后面的都不发
             st["dropped"].append(text)
             return None
         if not any(not isinstance(c, (Comp.Reply, Comp.At)) for c in comps):
             return await orig(message)
+        # 叫停（v0.4.0）：每一段发之前都看（第一段也看）
+        h = self.ears.halt_why(st["rnd"]) if st["halt"] else None
+        if h:
+            self._halt(event, st, h, text)
+            return None
         i = st["i"]
         st["i"] += 1
         why = None
@@ -270,12 +313,16 @@ class SendMod:
                 if why is None and d > el0:
                     why = await self._typing_wait(st, d, el0)
             elif d > el0:
-                await asyncio.sleep(d - el0)
+                await self._halt_wait(st, d - el0)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001  这一层出错不能连累 AstrBot 发消息
             logger.debug(f"{TAG} 打字节奏 / 刹车出错（这段照常发）：{e!r}")
             why = None
+        h = self.ears.halt_why(st["rnd"]) if st["halt"] else None
+        if h:  # 「打字」的时候他叫停了（v0.4.0）：比打字刹车先算
+            self._halt(event, st, h, text)
+            return None
         if why:
             self._braked(event, st, why, text)
             return None
@@ -287,16 +334,31 @@ class SendMod:
         return r
 
     async def _typing_wait(self, st, d, el0):
-        """边「打」边看：打了不到 30% 有值得停的就停；30%~80% 只认强信号；80% 以后先打完"""
+        """边「打」边看：打了不到 30% 有值得停的就停；30%~80% 只认强信号；80% 以后先打完。
+        （v0.4.0）叫停了就马上不等了（叫停在外面算，不算成刹车）"""
         t_s = time.time()
         while True:
             el = el0 + (time.time() - t_s)
             if el >= d:
                 return None
+            if st["halt"] and self.ears.halt_why(st["rnd"]):
+                return None
             why = progress_why(self.ears, st["rnd"], el / d if d > 0 else 1.0)
             if why:
                 return why
             await asyncio.sleep(min(0.25, max(0.02, d - el)))
+
+    async def _halt_wait(self, st, sec):
+        """（v0.4.0）打字节奏要补等的时候（没开刹车）：等着，他叫停了就马上不等了"""
+        if not st["halt"]:
+            await asyncio.sleep(sec)
+            return
+        end = time.time() + sec
+        while True:
+            left = end - time.time()
+            if left <= 0 or self.ears.halt_why(st["rnd"]):
+                return
+            await asyncio.sleep(min(0.25, left))
 
     def _braked(self, event, st, why, text):
         st["braked"] = why
@@ -308,6 +370,7 @@ class SendMod:
         self.recent.append(
             {
                 "t": int(time.time()),
+                "kind": "brake",
                 "where": f"群 {event.get_group_id()}" if st["group"] else "私聊",
                 "who": st["rnd"]["name"],
                 "why": why[:60],
@@ -321,9 +384,42 @@ class SendMod:
             + ("" if ok else "（对话记录没改成：记下的还是整段）")
         )
 
+    def _halt(self, event, st, h, text):
+        """叫停（v0.4.0）：这段和后面的都不发；记数、面板、日志"""
+        kind, why = h
+        st["halted"] = why
+        st["dropped"].append(text)
+        sent = " ".join(x for x in st["sent"] if x).strip()
+        event.set_extra("alive_sent_text", sent)
+        ok = self._trim_history(event, st["sent"])
+        self.daily.add("halted")
+        self.daily.add("halt_" + kind)
+        rec = {
+            "t": int(time.time()),
+            "kind": "halt",
+            "where": f"群 {event.get_group_id()}" if st["group"] else "私聊",
+            "who": st["rnd"]["name"],
+            "why": why[:60],
+            "sent": len(st["sent"]),
+            "left": text[:40],
+            "n": 1,
+        }
+        st["halt_rec"] = rec
+        self.recent.append(rec)
+        self.host.save()
+        n = len(st["sent"])
+        logger.info(
+            f"{TAG_H} {event.unified_msg_origin} {why} → 剩下的不发了（"
+            + (f"已经发了 {n} 段" if n else "一段都还没发")
+            + f"；没发的从「{text[:30]}」起）"
+            + ("" if ok else "（对话记录没改成：记下的还是整段）")
+        )
+
     def _trim_history(self, event, sent):
         """AstrBot 马上要把这一轮存进对话记录（存的是模型回的整段）：改成只到发出去的那段为止。
-        用的是 AstrBot 内部正在跑的那一轮（pipeline/process_stage/follow_up 里登记的）；对不上就不改"""
+        用的是 AstrBot 内部正在跑的那一轮（pipeline/process_stage/follow_up 里登记的）；对不上就不改。
+        （v0.4.0）一段都没发（叫停在第一段之前）：这一轮他那句和她的回话都标成不存（AstrBot 遇到空回也是两句都不存）；
+        中间调过工具的（中间还有别的消息）不动，免得记录里剩下没头的工具结果"""
         try:
             from astrbot.core.pipeline.process_stage.follow_up import (
                 _ACTIVE_AGENT_RUNNERS,
@@ -333,9 +429,17 @@ class SendMod:
             ctx = getattr(getattr(r, "run_context", None), "context", None)
             if r is None or getattr(ctx, "event", None) is not event:
                 return False
-            last = r.run_context.messages[-1]
+            msgs = r.run_context.messages
+            last = msgs[-1]
             if getattr(last, "role", "") != "assistant":
                 return False
+            if not any(x and x.strip() for x in sent):
+                prev = msgs[-2] if len(msgs) >= 2 else None
+                if getattr(prev, "role", "") != "user":
+                    return False
+                last._no_save = True
+                prev._no_save = True
+                return True
             first = next((x.strip() for x in sent if x and x.strip()), "")
             if isinstance(last.content, str):
                 if first and first in last.content:
@@ -419,6 +523,17 @@ class SendMod:
         except Exception:  # noqa: BLE001, S110  这一层出错不能连累 AstrBot 发消息
             pass
         self.asks.done(event.unified_msg_origin, id(event))
+        if st.get("halted"):  # （v0.4.0）叫停了：一共没发几段
+            n = len(st["dropped"])
+            self.daily.add("halt_segs", n)
+            if st.get("halt_rec") is not None:
+                st["halt_rec"]["n"] = n
+            self.host.save()
+            logger.info(
+                f"{TAG_H} {event.unified_msg_origin} 因为{st['halted']}，一共没发 {n} 段："
+                + " / ".join(x for x in st["dropped"] if x)[:80]
+            )
+            return
         if st["braked"] and len(st["dropped"]) > 1:
             logger.info(
                 f"{TAG_B} {event.unified_msg_origin} 一共没发 {len(st['dropped'])} 段："
@@ -447,6 +562,7 @@ class SendMod:
                     "typing_brake",
                     "brake_flood",
                     "quote_mode",
+                    "halt",
                 )
             },
         }

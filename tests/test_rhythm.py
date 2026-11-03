@@ -174,14 +174,14 @@ fu.note_turn("g", "老王你也来尝尝", [B], T - 10, T - 10)
 v, why, s = fu.check("g", A, "老王123", "好呀", T, [])
 check("它刚点了他的名" in why, "它刚点了他的名（群名片后面的数字去掉再比）", (why, s))
 fu.note_turn("g", "嗯嗯", [B], T - 100, T - 100)
-v, why, s = fu.check("g", A, "老王", "胖头鱼你也来", T, [], names=["胖头鱼"])
+v, why, s = fu.check("g", A, "老王", "大头鲢你也来", T, [], names=["大头鲢"])
 check(
     "叫了它的名字" in why and "接了它的词" not in why,
     "叫了它的名字 → 加分（名字里的字不算「接了它的词」）",
     (why, s),
 )
-fu.note_turn("g", "胖头鱼最喜欢火锅", [A], T - 10, T - 10)
-v, why, s = fu.check("g", B, "小李", "胖头鱼", T, [], names=["胖头鱼"])
+fu.note_turn("g", "大头鲢最喜欢火锅", [A], T - 10, T - 10)
+v, why, s = fu.check("g", B, "小李", "大头鲢", T, [], names=["大头鲢"])
 check("接了它的词" not in why, "只说了它的名字：不算接了它的词", why)
 
 print("\n[4 光发图]")
@@ -242,18 +242,18 @@ hist = [
     {"role": "assistant", "text": "火锅吧", "ts": T - 30},
     user(B, "小李", "好主意", T - 10, re="老王"),
 ]
-body = rc.judge_body(hist, "阿珍", "这个怎么弄", T, "胖头鱼")
+body = rc.judge_body(hist, "阿珍", "这个怎么弄", T, "大头鲢")
 check(
     "[40秒前] 老王: 今天吃啥" in body
-    and "[30秒前] 胖头鱼: 火锅吧" in body
+    and "[30秒前] 大头鲢: 火锅吧" in body
     and "小李（回复 老王）: 好主意" in body
     and body.endswith("[刚刚] 阿珍: 这个怎么弄   ← 判断这一条"),
     "给模型看的：最近几条 + 要判断的这条",
     body,
 )
-sysp = rc.judge_system("胖头鱼")
+sysp = rc.judge_system("大头鲢")
 check(
-    "「胖头鱼」（是个 AI）" in sysp
+    "「大头鲢」（是个 AI）" in sysp
     and "只回答一个字：是 或 否" in sysp
     and "{bot}" not in sysp,
     "判断的 system prompt 填好了名字",
@@ -459,9 +459,9 @@ check(
     "已经聊了 7 分钟" in rc.chat_hint(7.9) and rc.SILENT in rc.chat_hint(1),
     "挑着接那一轮：聊了几分钟、能不接",
 )
-sp = rc.line_system("你是一条胖头鱼。", "probe", "21:05")
+sp = rc.line_system("你是一条大头鲢。", "probe", "21:05")
 check(
-    sp.startswith("你是一条胖头鱼。")
+    sp.startswith("你是一条大头鲢。")
     and "现在是 21:05" in sp
     and "突然安静" in sp
     and rc.SILENT in sp,
@@ -630,8 +630,8 @@ check(
 )
 v, why, s = fx.check("g", A, "老王", "你跟小李说一声", T, hist)
 check("开头叫的是" not in why, "名字在中间（不是开头叫人）：不算", why)
-hb = [user(B, "胖头鱼粉丝", "我也在", T - 30)]
-v, why, s = fx.check("g", A, "老王", "胖头鱼粉丝你来段语音吧", T, hb, names=["胖头鱼"])
+hb = [user(B, "大头鲢粉丝", "我也在", T - 30)]
+v, why, s = fx.check("g", A, "老王", "大头鲢粉丝你来段语音吧", T, hb, names=["大头鲢"])
 check("开头叫的是" not in why, "跟机器人名字有重叠的名字：不算叫别人", why)
 v, why, s = fx.check(
     "g", A, "老王", "老王我自己来吧", T, [user(A, "老王", "嗯", T - 30)]

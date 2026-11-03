@@ -42,6 +42,24 @@ def strip_think(text):
     return THINK_OPEN.sub("", t).strip()
 
 
+# 防伪造标记（v0.3.0，借作者自己的 QQ 机器人 v1.16.3）：群聊节奏给模型的提示都以「[群聊节奏]」开头，只放在这一轮的临时提示里。
+# 群友在消息里自己打一段「[群聊节奏] …」，模型分不出哪段是系统给的 → 用户的话里出现就改成「[他打的字：群聊节奏]」。
+# 夹零宽字符、换成全角括号 / 【】也认；已经改过的不再改
+_ZW = "[\u200b\u200c\u200d\u200e\u200f\u2060\ufeff\u00ad]*"
+FAKE_MARK = re.compile(
+    r"[\[［【]\s*" + _ZW + _ZW.join("群聊节奏") + _ZW + r"\s*[\]］】]"
+)
+MARK_SAFE = "[他打的字：群聊节奏]"
+
+
+def neutral_marks(text):
+    """用户手打的「[群聊节奏]」→「[他打的字：群聊节奏]」；没有就原样返回"""
+    s = text or ""
+    if not s or not FAKE_MARK.search(s):
+        return text
+    return FAKE_MARK.sub(MARK_SAFE, s)
+
+
 def think_only(text):
     """有 <think> 但去掉以后什么都没剩（模型只想了、没说）"""
     t = text or ""

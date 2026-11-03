@@ -17,6 +17,11 @@ AstrBot 在群里默认只有被 @ / 唤醒才回。真人不是这样：
 跟本插件的省 token 模块是一体的（主动说之前问 ask("extra")，自己调模型的用量记 record_usage）；认 AI 还是别的插件（装了才用）。
 活人感新增：「好了 / 就这样 / 睡了」不接；接话打分加「话题词没对上两个」一项。
 v0.2.0：接话认错对象（跟别人的话更像 / 开头叫的是别人 → 扣分；「好几遍」不算在问）；打字刹车停了一半时只记真发出去的。
+v0.4.0：接话打分（借 Inner Thoughts，判断在 core/inner.py）—— 没点名它的群消息（接话窗口里 / 在线聊着）按 8 条打分 + 一句理由：
+  影子（默认）：照旧按原来的规则接不接，打分只记下来（面板、每天一个文件），跟实际接没接比；
+  生效：换成按分数决定；硬规矩照旧（收尾句不接、同一个人不 @ 最多接几轮、在线时挑着接的间隔 / 次数、正在回话）；
+        拿不准的「在接它的话」问一下判断模型（同一个模型、同样的问法），省 token 那道照样在叫模型之前拦。
+  事后的证据（看要不要生效用）：没接、他 90 秒内又 @ 了它 → 多半漏接；接了、模型自己选了 [[不说]] → 多半不该插。
 """
 
 import asyncio
@@ -29,6 +34,7 @@ from astrbot.api.event import MessageChain, MessageEventResult
 from astrbot.api.provider import ProviderRequest
 import astrbot.api.message_components as Comp
 
+from ..core import inner as IT
 from ..core.rhythm import (
     SILENT,
     Conf,
@@ -66,6 +72,9 @@ AIGUARD = "astrbot_plugin_fatfish_aiguard"
 TAG = "[节奏]"
 TAG_F = "[接话]"
 BUSY_SEC = 90  # 「正在回话」最多算这么久（模型出错、被别的插件拦下时不会有 after_message_sent）
+TAG_I = "[接话打分]"
+IT_AFTER_SEC = 90.0  # （v0.4.0）没接的那句之后多少秒内他又 @ 了它，算「多半漏接了」
+IT_FLUSH_SEC = 120.0  # 打分记录过这么久（事后的证据都齐了）再写进文件
 
 _IMG_TYPES = tuple(
     t for t in (getattr(Comp, "Image", None), getattr(Comp, "Face", None)) if t
@@ -125,6 +134,15 @@ class RhythmMod:
         self.busy = {}  # 群 -> 开始回话的时间
         self.lining = set()  # 正在想试探 / 收尾那句的群
         self.carry = {}  # 会话 -> 上次 [[不说]] 那一轮没存下的群聊上下文
+        # （v0.4.0）接话打分：今天的数、最近 40 次、还没写进文件的
+        it = st.get("inner") if isinstance(st.get("inner"), dict) else {}
+        self.it_daily = IT.Daily(it.get("stats"))
+        self.it_recent = deque(
+            [x for x in it.get("recent") or [] if isinstance(x, dict)], maxlen=40
+        )
+        self._it_seq = max((int(x.get("id") or 0) for x in self.it_recent), default=0)
+        self._it_pending = []
+        self._it_cleaned = ""
         self._ai_cache = (None, set())
         self._alive = True
         self._tasks = set()
@@ -136,6 +154,10 @@ class RhythmMod:
             "stats": self.daily.today(),
             "decisions": list(self.decisions),
             "lines": list(self.lines),
+            "inner": {
+                "stats": self.it_daily.today(time.strftime("%Y-%m-%d")),
+                "recent": list(self.it_recent),
+            },
         }
 
     def _save(self, force=False):
@@ -164,6 +186,7 @@ class RhythmMod:
         for t in list(self._tasks) + [self._ticker]:
             if t is not None and not t.done():
                 t.cancel()
+        self._it_flush(force=True)  # 还没写进文件的打分记录（v0.4.0）
 
     # ───────── 小工具 ─────────
     @staticmethod
@@ -418,6 +441,9 @@ class RhythmMod:
         if event.is_at_or_wake_command:  # @ / 引用它 / 唤醒词：AstrBot 本来就会回
             self.fu.reset(gk, uid)  # 这个人的接话轮数重新算
             event.set_extra("rhythm_addr", True)
+            self._it_at_after(
+                gk, uid, now
+            )  # （v0.4.0）他前面没被接的那句：多半是漏接了
             return
         if is_ai:
             self.daily.add("skip_ai")
@@ -432,20 +458,43 @@ class RhythmMod:
             return  # 刚收尾潜水：不主动接（被 @ 照样回）
         owner = bool(event.is_admin())
         text = m["text"] or m["shown"]
+        names = self._names(sid, gid)
+        # （v0.4.0）接话打分：在接话窗口里 / 在线聊着的才打（影子：只记；生效：按分数接不接）
+        mode = self.conf("inner_mode")
+        rec = None
+        if mode != "off":
+            rec = self._it_score(gk, uid, name, text, now, hist, m["only_pic"], names)
+            if rec is not None:
+                rec["block"] = self._it_block(gk, uid, text, now, owner, rec["kind"])
+        if rec is not None and mode == "live":
+            await self._it_live(
+                event, gk, uid, name, text, now, hist, owner, names, rec
+            )
+            return
+        await self._old_decide(event, gk, uid, name, text, now, hist, m, owner, names)
+        if rec is not None:
+            self._it_shadow(event, rec)
+
+    async def _old_decide(self, event, gk, uid, name, text, now, hist, m, owner, names):
+        """原来的接话 / 挑着接（v0.4.0 原样挪进来；接话打分是影子 / 关着时走这里）"""
+        gid = gk.split(":", 1)[-1]
 
         # ── 接话：没 @ 它，但可能在接它刚才的话 ──
         verdict, why, score = self.fu.check(
-            gk, uid, name, text, now, hist, m["only_pic"], owner, self._names(sid, gid)
+            gk, uid, name, text, now, hist, m["only_pic"], owner, names
         )
         if verdict == "ask":
             ok, how = await self._judge(
-                event.unified_msg_origin, hist, name, text, now, self._names(sid, gid)
+                event.unified_msg_origin, hist, name, text, now, names
             )
             verdict = (
                 "model_yes"
                 if ok
                 else ("model_no" if how.startswith("模型说") else "model_fail")
             )
+            event.set_extra(
+                "rhythm_judged", verdict
+            )  # （v0.4.0）接话打分的影子拿不准时用模型这次的答案
             if ok and (
                 self.rh.cooling(gk) or self.fu.capped(gk, uid, time.time(), owner)
             ):
@@ -507,6 +556,248 @@ class RhythmMod:
             logger.info(
                 f"{TAG} 群{gid} 正聊着（已经 {self.rh.minutes_in(gk, now)} 分钟）{name}「{text[:30]}」没点名 → 挑着接"
             )
+
+    # ───────── 接话打分（v0.4.0，借 Inner Thoughts；判断在 core/inner.py）─────────
+    def _it_score(self, gk, uid, name, text, now, hist, only_pic, names):
+        """这条要不要打分（在接话窗口里、或者在线聊着）→ 打分记录 / None（不在范围里、出错）"""
+        st = self.fu.st(gk)
+        win = float(self.conf("window_sec"))
+        near = bool(st["sent"]) and -5 <= now - st["sent"] <= win
+        follow_ok = bool(self.conf("follow_enable")) and near
+        active = self.rh.is_active(gk)
+        if not (follow_ok or active):
+            return None
+        try:
+            ev = IT.evaluate(
+                text,
+                uid,
+                name,
+                now,
+                hist,
+                bot={
+                    "text": st["text"],
+                    "sent": st["sent"],
+                    "t0": st["t0"],
+                    "answered": st["answered"],
+                },
+                names=names,
+                only_pic=only_pic,
+                active=active,
+                noise=self.host.shared.noise(gk, now),
+                turns=self.fu.turns(gk, uid, now),
+                window=win,
+                growth=self.conf("inner_growth"),
+                cap=self.conf("inner_growth_cap"),
+            )
+        except Exception as e:
+            logger.debug(f"{TAG_I} 打分出错（这条不打）：{e!r}")
+            return None
+        kind = IT.kind_of(ev, uid in st["answered"])
+        if kind == "follow" and not follow_ok:
+            kind = "chat"
+        if kind == "chat" and not active:
+            kind = "follow" if follow_ok else ""
+        thr, band = float(self.conf("inner_threshold")), float(self.conf("inner_band"))
+        self._it_seq += 1
+        hint = "、".join(
+            w for k in IT.KEYS if ev["s"][k] >= 3.5 for w in ev["up"].get(k) or ()
+        )
+        return {
+            "id": self._it_seq,
+            "t": int(now),
+            "ts": now,
+            "gk": gk,
+            "g": gk.split(":", 1)[-1],
+            "uid": str(uid),
+            "who": str(name or "")[:16],
+            "text": str(text or "")[:60],
+            "s": ev["s"],
+            "base": ev["base"],
+            "quiet": ev["quiet"],
+            "boost": ev["boost"],
+            "total": ev["total"],
+            "thr": thr,
+            "v": IT.verdict(ev["total"], thr, band),
+            "kind": kind,
+            "why": IT.reason(ev),
+            "hint": hint[:80],
+            "it": "",
+            "now": "",
+            "judge": "",
+            "block": "",
+            "out": [],
+            "mode": self.conf("inner_mode"),
+        }
+
+    def _it_block(self, gk, uid, text, now, owner, kind):
+        """跟以前一样的硬规矩（打分过线也不接）→ 原因 / ""。影子里也算，这样「打分会不会接」就是生效以后真会怎样"""
+        if not kind:
+            return "这时候既不在接话窗口里、也没在线"
+        if self.conf("closing_skip") and is_closing(text):
+            return "收尾句不接"
+        if self.fu.capped(gk, uid, now, owner):
+            return (
+                f"不 @ 它已经连着接了 {self.fu.turns(gk, uid, now)} 轮（要 @ 它才接）"
+            )
+        if kind == "chat":
+            if self._busy(gk, now):
+                return "它正在回别人"
+            return self.rh.chat_block(gk, now)
+        return ""
+
+    async def _it_live(self, event, gk, uid, name, text, now, hist, owner, names, rec):
+        """接话打分生效：按分数决定接不接（拿不准的「在接它的话」问一下判断模型；挑着接的按线定）"""
+        v, kind, gid = rec["v"], rec["kind"], rec["g"]
+        if v == "maybe" and not rec["block"]:
+            if (
+                kind == "follow"
+                and self.conf("ask_model")
+                and float(self.conf("inner_band")) > 0
+            ):
+                ok, how = await self._judge(
+                    event.unified_msg_origin, hist, name, text, now, names
+                )
+                rec["judge"] = (
+                    "yes" if ok else ("no" if how.startswith("模型说") else "fail")
+                )
+                v = "take" if ok else "skip"
+                if ok and (
+                    self.rh.cooling(gk) or self.fu.capped(gk, uid, time.time(), owner)
+                ):
+                    rec["block"] = "等模型的时候它刚收尾 / 这个人的轮数到了"
+            else:
+                v = "take" if rec["total"] >= rec["thr"] else "skip"
+        take = v == "take" and not rec["block"]
+        rec["it"] = "take" if take else "skip"
+        rec["now"] = kind if take else ""
+        why = rec["why"] + (f"；{rec['block']}" if rec["block"] else "")
+        if take or rec["judge"]:
+            label = {"yes": "model_yes", "no": "model_no", "fail": "model_fail"}.get(
+                rec["judge"], "inner_yes" if take else "inner_no"
+            )
+            self._decide(
+                gk, uid, name, text, rec["total"], why, label, take, kind or "follow"
+            )
+        self._it_note(rec, event)
+        if take:
+            if kind == "chat":
+                self.rh.note_try(gk, now)
+            self._trigger(event, gk, uid, name, text, kind, rec["hint"] or rec["why"])
+            logger.info(
+                f"{TAG_I} 群{gid} {name}「{text[:30]}」→ 接（{rec['total']:g} 分，线 {rec['thr']:g}；{why}）"
+            )
+        else:
+            logger.info(
+                f"{TAG_I} 群{gid} {name}「{text[:30]}」→ 不接（{rec['total']:g} 分，线 {rec['thr']:g}；{why}）"
+            )
+
+    def _it_shadow(self, event, rec):
+        """影子：原来的规则已经定了接不接；这里只补上「打分会怎样」，记下来比"""
+        v = rec["v"]
+        judged = event.get_extra("rhythm_judged") or ""
+        if v == "maybe":
+            if rec["kind"] == "follow" and judged in ("model_yes", "model_no"):
+                rec["judge"] = "yes" if judged == "model_yes" else "no"
+                v = "take" if judged == "model_yes" else "skip"
+            elif (
+                rec["kind"] != "follow"
+                or not self.conf("ask_model")
+                or float(self.conf("inner_band")) <= 0
+            ):
+                v = "take" if rec["total"] >= rec["thr"] else "skip"
+            else:
+                v = "ask"  # 生效的话会问一下模型；影子里不另外问（不花钱）
+        if v == "take" and rec["block"]:
+            v = "skip"
+        rec["it"] = v
+        rec["now"] = self._kind(event) or ""
+        self._it_note(rec, event)
+        took = bool(rec["now"])
+        if v in ("take", "skip") and (v == "take") != took:
+            logger.info(
+                f"{TAG_I}（影子）群{rec['g']} {rec['who']}「{rec['text'][:30]}」→ 打分{'会接' if v == 'take' else '不接'}"
+                f"（{rec['total']:g} 分，线 {rec['thr']:g}），现在的规则{'接了' if took else '没接'}；{rec['why']}"
+            )
+        else:
+            logger.debug(
+                f"{TAG_I}（影子）群{rec['g']} {rec['who']}「{rec['text'][:30]}」→ {v}（{rec['total']:g} 分）现在{'接了' if took else '没接'}"
+            )
+
+    def _it_note(self, rec, event=None):
+        self.it_daily.note(rec, time.strftime("%Y-%m-%d"))
+        self.it_recent.append(rec)
+        self._it_pending.append(rec)
+        if event is not None:
+            event.set_extra("inner_rec", rec["id"])
+        self._save()
+
+    def _it_at_after(self, gk, uid, now):
+        """他 @ 了它：他 90 秒内没被接的那句（最近一句）多半是漏接了 → 记一笔"""
+        for rec in reversed(self.it_recent):
+            if rec.get("gk") != gk or rec.get("uid") != str(uid):
+                continue
+            if now - float(rec.get("ts") or 0) > IT_AFTER_SEC:
+                return
+            if not rec.get("now") and "at_after" not in (rec.get("out") or []):
+                rec.setdefault("out", []).append("at_after")
+                self.it_daily.outcome(rec, "at_after", time.strftime("%Y-%m-%d"))
+                self._save()
+                logger.info(
+                    f"{TAG_I} 群{rec.get('g')} {rec.get('who')} 没被接的「{str(rec.get('text'))[:20]}」之后又 @ 了它"
+                    f"（打分当时说{'接' if rec.get('it') == 'take' else '不接' if rec.get('it') == 'skip' else '拿不准'}）→ 记成多半漏接了"
+                )
+            return
+
+    def _it_silent(self, event):
+        """接了、模型自己选了 [[不说]]：多半不该插 → 记一笔"""
+        rid = event.get_extra("inner_rec")
+        if not rid:
+            return
+        for rec in reversed(self.it_recent):
+            if rec.get("id") == rid:
+                if "silent" not in (rec.get("out") or []):
+                    rec.setdefault("out", []).append("silent")
+                    self.it_daily.outcome(rec, "silent", time.strftime("%Y-%m-%d"))
+                return
+
+    def _it_flush(self, now=None, force=False):
+        """打分记录过了 2 分钟（事后的证据都齐了）写进 plugin_data/…/inner/日期.jsonl；留 inner_log_days 天"""
+        now = float(now or time.time())
+        days = int(self.conf("inner_log_days"))
+        ready = [
+            r
+            for r in self._it_pending
+            if force or now - float(r.get("ts") or 0) >= IT_FLUSH_SEC
+        ]
+        if not ready:
+            return
+        self._it_pending = [r for r in self._it_pending if r not in ready]
+        if days <= 0:
+            return
+        d = self.data_dir / "inner"
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            by_day = {}
+            for r in ready:
+                row = {
+                    k: v for k, v in r.items() if k not in ("gk", "ts", "hint", "mode")
+                }
+                row["mode"] = r.get("mode")
+                day = time.strftime(
+                    "%Y-%m-%d", time.localtime(float(r.get("ts") or now))
+                )
+                by_day.setdefault(day, []).append(json.dumps(row, ensure_ascii=False))
+            for day, rows in by_day.items():
+                with open(d / f"{day}.jsonl", "a", encoding="utf-8") as f:
+                    f.write("\n".join(rows) + "\n")
+            today = time.strftime("%Y-%m-%d", time.localtime(now))
+            if self._it_cleaned != today:
+                self._it_cleaned = today
+                for f in d.glob("*.jsonl"):
+                    if now - f.stat().st_mtime > days * 86400:
+                        f.unlink()
+        except Exception as e:  # 写不进去不影响接话
+            logger.debug(f"{TAG_I} 写打分记录出错：{e!r}")
 
     async def _judge(self, umo, hist, name, text, now, names):
         """拿不准：让模型看最近几条判断。返回 (是不是, 怎么判的)"""
@@ -627,6 +918,7 @@ class RhythmMod:
         gk = self._gk(event)
         self.busy.pop(gk, None)
         self._carry_over(event)
+        self._it_silent(event)  # （v0.4.0）接话打分：接了、模型选了不说
         self.daily.add("silent")
         self._save()
         logger.info(f"{TAG} 群{event.get_group_id()} 它想了想没接（模型回了 {SILENT}）")
@@ -675,6 +967,9 @@ class RhythmMod:
         cut = event.get_extra("alive_sent_text")
         if cut is not None:  # 打字刹车停了一半（v0.2.0）：只记真发出去的那几段
             text = str(cut).strip()
+            if not text:  # 叫停在第一段之前（v0.4.0）：她一句都没说出去 —— 不算说过话，「正在回话」也清掉
+                self.busy.pop(self._gk(event), None)
+                return
         if not text:
             return
         gk, now = self._gk(event), time.time()
@@ -715,6 +1010,7 @@ class RhythmMod:
         while self._alive:
             try:
                 await asyncio.sleep(self._tick_every())
+                self._it_flush()  # （v0.4.0）打分记录写进文件
                 if not self.conf("enable") or not self.host.active("rhythm"):
                     continue
                 now = time.time()
@@ -882,6 +1178,21 @@ class RhythmMod:
             "groups": groups[:50],
             "decisions": list(self.decisions)[-40:][::-1],
             "lines": list(self.lines)[-20:][::-1],
+            "inner": {  # （v0.4.0）接话打分
+                "mode": self.conf("inner_mode"),
+                "threshold": self.conf("inner_threshold"),
+                "band": self.conf("inner_band"),
+                "growth": self.conf("inner_growth"),
+                "cap": self.conf("inner_growth_cap"),
+                "log_days": self.conf("inner_log_days"),
+                "names": IT.NAMES,
+                "keys": list(IT.KEYS),
+                "today": dict(self.it_daily.today(time.strftime("%Y-%m-%d"))),
+                "recent": [
+                    {k: v for k, v in r.items() if k not in ("gk", "ts", "hint")}
+                    for r in list(self.it_recent)[::-1]
+                ],
+            },
             "enabled": bool(self.conf("enable")),
             "config": {
                 k: self.conf(k)
@@ -906,6 +1217,8 @@ class RhythmMod:
                     "topic_penalty",
                     "other_overlap",
                     "call_other",
+                    "inner_mode",
+                    "inner_threshold",
                 )
             },
         }

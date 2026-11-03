@@ -72,7 +72,15 @@ DEFAULTS = {
     "other_penalty": 2.5,  # 上面这条扣几分
     "call_other": True,  # 开头叫的是群里别人的名字（「小李来段语音」）→ 扣分（多半在跟那个人说）
     "call_other_penalty": 4.0,  # 上面这条扣几分
+    # ── （v0.4.0 新增：接话打分，借 Inner Thoughts；判断在 core/inner.py）──
+    "inner_mode": "shadow",  # shadow = 只算分、记理由、面板能看，不改接不接；live = 按分数决定接不接；off = 不算
+    "inner_threshold": 3.2,  # 过几分接（每条 0~5 分，取平均再乘沉默加成）
+    "inner_band": 0.4,  # 线上下几分以内算拿不准（接话那种问一下判断模型；挑着接那种按线定）
+    "inner_growth": 1.02,  # 沉默加成：它没说话的时候群里每过一句 × 几
+    "inner_growth_cap": 1.3,  # 沉默加成最多 × 几
+    "inner_log_days": 14,  # 打分记录（plugin_data 里每天一个文件）留几天；0 = 不写文件
 }
+INNER_MODES = ("shadow", "live", "off")
 
 _CJK = re.compile(r"[㐀-鿿]")
 # 这些两字词太常见 不算「接了它的词」
@@ -115,7 +123,10 @@ class Conf:
             if isinstance(v, str):
                 v = re.split(r"[,，\s]+", v)
             return [str(x).strip() for x in (v or []) if str(x).strip()]
-        return str(v)
+        v = str(v)
+        if key == "inner_mode" and v.strip() not in INNER_MODES:
+            return d  # 填错了：按默认（影子）
+        return v.strip() if key == "inner_mode" else v
 
 
 def bigrams(s, stop=()):
@@ -132,10 +143,11 @@ def bigrams(s, stop=()):
 
 
 # 收尾句：说完就走的话（不是在等回答）
-CLOSING = re.compile(
-    r"^(?:好了|好啦|好嘞|就这样|就这样吧|先这样|先这样吧|就先这样|睡了|我睡了|去睡了|睡觉了|睡啦|晚安|拜拜|拜了|再见|88|886"
-    r"|不聊了|先下了|下了|走了|溜了|撤了|散了|去忙了|先忙了|我去忙了)[!！。.~～,，…啦了哦呀吧]*$"
-)
+CLOSING_WORDS = (
+    r"好了|好啦|好嘞|就这样|就这样吧|先这样|先这样吧|就先这样|睡了|我睡了|去睡了|睡觉了|睡啦|晚安|拜拜|拜了|再见|88|886"
+    r"|不聊了|先下了|下了|走了|溜了|撤了|散了|去忙了|先忙了|我去忙了"
+)  # （v0.4.0 拆出来：接话打分里「好了睡了」这种连着说的也认）
+CLOSING = re.compile(r"^(?:" + CLOSING_WORDS + r")[!！。.~～,，…啦了哦呀吧]*$")
 
 
 def is_closing(text):
@@ -465,21 +477,34 @@ class Rhythm:
             else 0
         )
 
+    def chat_block(self, g, now=None, to_other=False):
+        """在线时挑着接的硬规矩（不掷骰子；v0.4.0 拆出来，接话打分生效时也用）→ 不能接的原因 / ""（能接）"""
+        now = now or time.time()
+        st = self.st(g)
+        if not self.enabled() or st["mode"] != "active":
+            return "不在线"
+        if to_other:
+            return "在跟别人说"
+        if now - max(st["last_me"], st["last_try"]) < float(self.c("min_gap_sec")):
+            return f"离上次说话不到 {int(float(self.c('min_gap_sec')))} 秒"
+        if st["free"] >= int(self.c("max_replies")):
+            return f"这次在线已经挑着接了 {st['free']} 次"
+        return ""
+
+    def note_try(self, g, now=None):
+        """想接（哪怕最后它选择不说）也算一次 免得连着想"""
+        self.st(g)["last_try"] = now or time.time()
+
     def want_reply(self, g, to_other=False, now=None, only_pic=False):
         """在线时 一条没点名的消息 要不要挑着接"""
         now = now or time.time()
-        st = self.st(g)
-        if not self.enabled() or st["mode"] != "active" or to_other:
-            return False
-        if now - max(st["last_me"], st["last_try"]) < float(self.c("min_gap_sec")):
-            return False
-        if st["free"] >= int(self.c("max_replies")):
+        if self.chat_block(g, now, to_other):
             return False
         p = float(self.c("reply_prob")) * (
             float(self.c("pic_factor")) if only_pic else 1.0
         )
         if self.rand() < p:
-            st["last_try"] = now  # 想接（哪怕最后它选择不说）也算一次 免得连着想
+            self.note_try(g, now)
             return True
         return False
 

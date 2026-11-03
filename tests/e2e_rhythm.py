@@ -19,6 +19,12 @@ AstrBot 开着「群聊消息记录注入上下文」（README 建议开的）
   今天的数重载后还在；没列的群不接话；模型判断太慢 → 算不接，等的时候别的群照常回
 第三段（时间参数调小）：省 token 插件说「算了」→ 不试探；冷场试探发得出去（带人格、带最近的群聊）、到点收尾发得出去、
   收尾后冷却期不接话但被 @ 照样回、主动说的话记进了 AstrBot 的对话记录
+接话打分（v0.4.0）：
+  第一段（默认影子）：上面那些接不接一个都没变；面板「接话打分」里每条没点名的消息都有 8 条分和理由、记着原来的规则接没接；
+    接了、模型选了 [[不说]] 的记成「多半不该插」
+  第四段（WebUI 切成生效）：按分数接（在接它的话、过线 → 接）、按分数不接（「哈哈哈」挑着接的概率 = 1 也不接）、
+    拿不准的问判断模型（是 → 接、不是 → 不接）、没接的他后来又 @ 了它 → 记成「多半漏接」、每次接没接都跟打分一致；
+    打分记录写进 plugin_data/…/inner/日期.jsonl（重载时写完）
 用法：python tests/e2e_astrbot.py [插件目录 默认上一层] [--keep]
   需要装了 astrbot（测过 4.29.3）的 Python，astrbot 命令在 PATH 里（或者跟这个 Python 在同一个 bin 目录）；另外要 aiohttp、pyjwt、websockets
   只在临时文件夹里跑：模型是假的、QQ 端是假的，不连外网
@@ -178,7 +184,7 @@ class FakeQQ:
         self.sent = []
         self.store = {}
         self.names = {
-            SELF: "胖头鱼",
+            SELF: "大头鲢",
             A: "老王",
             B: "小李",
             C: "阿珍",
@@ -253,7 +259,7 @@ class FakeQQ:
                         "font": 0,
                         "sender": {
                             "user_id": SELF,
-                            "nickname": "胖头鱼",
+                            "nickname": "大头鲢",
                             "card": "",
                             "role": "member",
                         },
@@ -274,7 +280,7 @@ class FakeQQ:
                 elif act == "get_msg":
                     data = self.store.get(int(p.get("message_id") or 0)) or {}
                 elif act == "get_login_info":
-                    data = {"user_id": SELF, "nickname": "胖头鱼"}
+                    data = {"user_id": SELF, "nickname": "大头鲢"}
                 await self.ws.send(
                     json.dumps(
                         {"status": "ok", "retcode": 0, "data": data, "echo": echo}
@@ -418,6 +424,9 @@ PHASE1 = dict(
 )
 PHASE2 = dict(
     PHASE1, reply_prob=0.0, judge_timeout_sec=3.0, groups=[str(G1), str(G2), str(G4)]
+)
+PHASE4 = dict(  # （v0.4.0）接话打分生效；原来挑着接的概率开到 1，看得出是打分在定
+    PHASE1, inner_mode="live", reply_prob=1.0, max_turns=5
 )
 PHASE3 = dict(
     topic_overlap=False,
@@ -600,6 +609,19 @@ async def main():
         PYTHONUNBUFFERED="1",
         KIND_LOG=str(KIND_LOG),
     )
+    for k in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        env[k] = (
+            "http://127.0.0.1:9"  # （v0.4.0 补上）AstrBot 启动时自己想连外网：让它连不出去（测试不连外网）
+        )
+    env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1,localhost"
+    env["ASTRBOT_DISABLE_METRICS"] = "1"
     log = open(ROOT / "astrbot_stdout.log", "w", encoding="utf-8")
     proc = subprocess.Popen(
         [ASTRBOT, "run"], cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT
@@ -621,7 +643,7 @@ async def main():
         text = log_text()
         check(
             PNAME in text
-            and "[活人感] v0.2.0 已启用" in text
+            and "[活人感] v0.4.0 已启用" in text
             and "Traceback" not in text,
             "AstrBot 起来了、插件加载了、没有报错",
             text[-1500:],
@@ -774,9 +796,9 @@ async def main():
             (ok, ks),
         )
         check(
-            "「胖头鱼」（是个 AI）" in jc.get("system", "")
+            "「大头鲢」（是个 AI）" in jc.get("system", "")
             and "[刚刚] 阿珍: 这个怎么弄   ← 判断这一条" in jc.get("body", "")
-            and "胖头鱼: 收到第" in jc.get("body", ""),
+            and "大头鲢: 收到第" in jc.get("body", ""),
             "给模型看的：最近几条（机器人叫 QQ 昵称）+ 要判断的这条",
             jc,
         )
@@ -889,6 +911,43 @@ async def main():
             and any(x["verdict"] == "yes" and x["score"] >= 4 for x in dec),
             "最近的判断：分够了接、模型说是 / 不是、轮数到了",
             dec[:6],
+        )
+        it = st.get("inner") or {}
+        itr, itt = it.get("recent") or [], it.get("today") or {}
+        r_follow = [x for x in itr if x.get("text") == "你刚才说的啥意思"]
+        r_chat = [x for x in itr if x.get("text") == "今天食堂的饭真难吃"]
+        check(
+            it.get("mode") == "shadow"
+            and itt.get("scored", 0) >= 6
+            and r_follow
+            and all(x.get("now") == "follow" for x in r_follow)
+            and r_chat
+            and r_chat[-1].get("now") == "chat",
+            "接话打分（影子，v0.4.0）：没点名的消息都打了分，记着原来的规则接没接（接话 follow / 挑着接 chat）",
+            (
+                it.get("mode"),
+                itt,
+                [(x.get("text"), x.get("now"), x.get("it")) for x in itr[:8]],
+            ),
+        )
+        check(
+            all(
+                set(x.get("s") or {})
+                == {"rel", "gap", "imp", "urg", "coh", "ori", "bal", "dyn"}
+                and x.get("it") in ("take", "skip", "ask")
+                and x.get("why")
+                for x in itr
+            )
+            and itt.get("it_take", 0) + itt.get("it_skip", 0) + itt.get("it_ask", 0)
+            == itt.get("scored"),
+            "每条都有 8 条分、打分怎么说（接 / 不接 / 拿不准）、一句理由",
+            itr[:2],
+        )
+        check(
+            any("silent" in (x.get("out") or []) for x in itr)
+            and itt.get("silent", 0) >= 1,
+            "接了、模型选了 [[不说]] 的：记成「多半不该插」",
+            [(x.get("text"), x.get("out")) for x in itr if x.get("out")],
         )
         async with s.get(
             f"http://127.0.0.1:{DASH_PORT}/api/v1/plugins/extensions/{PNAME}/state"
@@ -1225,7 +1284,155 @@ async def main():
             "统计随时存进了 state.json",
             saved.get("stats"),
         )
+        # ═════════ 第四段：接话打分生效（v0.4.0）═════════
+        print("\n[第四段：接话打分切成生效（v0.4.0）]")
+        G11, G12 = 7011, 7012
+        code, d = await set_config(s, hdr, PHASE4)
+        check(code == 200, "改配置成功（接话打分：生效；挑着接的概率 1）", d)
+        await api_post(s, hdr, {"m": "budget", "do": "full", "hours": -1})
+        ok, _, _ = await turn(qq, G11, A, "大家好呀", at_bot=True)
+        ok1, _, k1 = await turn(qq, G11, A, "你刚才说的啥意思")
+        check(
+            ok and ok1 and k1 and k1[-1]["kind"] == "follow",
+            "他接着它的话问（打分过线）：接，算接话（follow）",
+            (ok, ok1, k1),
+        )
+        await asyncio.sleep(1.0)
+        ok2, _, k2 = await turn(qq, G11, B, "哈哈哈", expect=False)
+        check(
+            not ok2 and not k2,
+            "别人「哈哈哈」：打分不过线 → 不接（原来的规则挑着接的概率 1 会接）",
+            k2,
+        )
+        JUDGE["answer"] = "是"
+        await asyncio.sleep(1.0)
+        ok3, _, k3 = await turn(
+            qq, G11, C, "SILENT 你刚才说的那个是什么意思", expect=False
+        )
+        JUDGE["answer"] = "不是"
+        await asyncio.sleep(0.5)
+        ok4, _, k4 = await turn(qq, G11, C, "嗯嗯", expect=False)
+        ok5, _, _ = await turn(qq, G11, C, "在吗", at_bot=True)
+        st_code, d = await api_get(s, hdr, "state")
+        it = ((d or {}).get("data") or {}).get("inner") or {}
+        itr = [x for x in it.get("recent") or [] if x.get("mode") == "live"]
+        by = {x.get("text"): x for x in itr}
+        check(
+            it.get("mode") == "live"
+            and by.get("你刚才说的啥意思", {}).get("it") == "take"
+            and by.get("你刚才说的啥意思", {}).get("now") == "follow"
+            and by.get("哈哈哈", {}).get("it") == "skip"
+            and not by.get("哈哈哈", {}).get("now"),
+            "面板：生效时每条记着打分接不接、实际接没接（一样）",
+            [
+                (x.get("text"), x.get("it"), x.get("now"), x.get("total"))
+                for x in itr[:6]
+            ],
+        )
+        r3 = by.get("SILENT 你刚才说的那个是什么意思", {})
+        check(
+            k3
+            and k3[-1]["kind"] in ("follow", "chat")
+            and r3.get("it") == "take"
+            and "silent" in (r3.get("out") or []),
+            "接了（打分过线或者问模型说是）、模型选了 [[不说]]：不发，记成「多半不该插」",
+            (k3, r3),
+        )
+        r4 = by.get("嗯嗯", {})
+        check(
+            not ok4
+            and ok5
+            and r4.get("it") == "skip"
+            and "at_after" in (r4.get("out") or []),
+            "「嗯嗯」没接、他接着 @ 了它：记成「多半漏接」（事后的证据）",
+            r4,
+        )
+        mism = [
+            (x.get("text"), x.get("it"), x.get("now"))
+            for x in itr
+            if (x.get("it") == "take") != bool(x.get("now"))
+        ]
+        check(not mism, "生效时：实际接没接 = 打分说接不接（一条不差）", mism)
+
+        # 拿不准的范围开大：在接它的话那种都问判断模型
+        code, d = await set_config(s, hdr, dict(PHASE4, inner_band=2.0))
+        check(
+            code == 200,
+            "改配置成功（拿不准的范围 ±2 分：在接它的话那种都问一下判断模型）",
+            d,
+        )
+        ok, _, _ = await turn(qq, G12, A, "我来了", at_bot=True)
+        await asyncio.sleep(1.0)
+        nj = len(judge_calls)
+        JUDGE["answer"] = "不是"
+        okn, _, kn = await turn(qq, G12, B, "你说的是哪个呀", expect=False)
+        JUDGE["answer"] = "是"
+        await asyncio.sleep(1.0)
+        oky, _, ky = await turn(qq, G12, C, "你刚才讲的那家店在哪")
+        JUDGE["answer"] = "不是"
+        st_code, d = await api_get(s, hdr, "state")
+        it = ((d or {}).get("data") or {}).get("inner") or {}
+        by = {x.get("text"): x for x in it.get("recent") or []}
+        check(
+            not okn
+            and oky
+            and ky
+            and ky[-1]["kind"] == "follow"
+            and by.get("你说的是哪个呀", {}).get("judge") == "no"
+            and by.get("你刚才讲的那家店在哪", {}).get("judge") == "yes"
+            and len(judge_calls) == nj + 2,
+            "拿不准的「在接它的话」：问判断模型（跟原来同一个问法），说不是 → 不接、说是 → 接",
+            (
+                okn,
+                oky,
+                ky,
+                len(judge_calls) - nj,
+                [(k, v.get("judge"), v.get("it")) for k, v in by.items()][:4],
+            ),
+        )
+        jc = judge_calls[-1] if judge_calls else {}
+        check(
+            "你在旁观一个 QQ 群" in jc.get("system", "")
+            and "只回答一个字：是 或 否" in jc.get("system", ""),
+            "问模型用的还是原来那段判断（不多花 token）",
+            jc.get("system", "")[:200],
+        )
+        if os.environ.get("ALIVE_DUMP"):  # 给面板的渲染检查用（整份状态）
+            st_code, d = await api_get(s, hdr, "state")
+            Path(os.environ["ALIVE_DUMP"]).write_text(
+                json.dumps((d or {}).get("whole") or {}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        code, d = await set_config(s, hdr, PHASE1)  # 重载：打分记录写完
+        files = sorted(
+            (ROOT / "data" / "plugin_data" / PNAME / "inner").glob("*.jsonl")
+        )
+        rows = []
+        for f in files:
+            for ln in f.read_text(encoding="utf-8").splitlines():
+                try:
+                    rows.append(json.loads(ln))
+                except ValueError:
+                    pass
+        check(
+            files
+            and len(rows) >= 10
+            and {r.get("mode") for r in rows} >= {"shadow", "live"}
+            and all(
+                len(r.get("s") or {}) == 8 and "it" in r and "now" in r for r in rows
+            )
+            and any("at_after" in (r.get("out") or []) for r in rows)
+            and not any("gk" in r or "ts" in r for r in rows),
+            f"打分记录写进了 plugin_data/…/inner/（{len(rows)} 条，影子和生效的都有，带事后的证据）",
+            (files, rows[:2]),
+        )
+
         text = log_text()
+        check(
+            "[接话打分]" in text and "→ 接（" in text and "→ 不接（" in text,
+            "日志里有 [接话打分]（接 / 不接、几分、理由）",
+            [x for x in text.splitlines() if "[接话打分]" in x][-3:],
+        )
         check(
             "Traceback" not in text,
             "整个过程 AstrBot 日志里没有 Traceback",

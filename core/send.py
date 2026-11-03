@@ -10,6 +10,9 @@
                     · 他又说了一句正经的（会再回他的、不是「嗯 / 哈哈 / 好的」这种）→ 只在这条刚开打（不到 30%）或者两条之间停
                     · 群里她打字的时候又来了好几句（默认 5 句）→ 两条之间停（话题可能已经过去了）
                     · 这条打到 80% 以后，先打完
+  叫停（v0.4.0，默认开）：她分段发的时候，他把她在回的那句撤回了，或者明确说了「算了 / 不用了 / 别说了」这类
+                    → 这段和后面没发的都不发了（不看打到哪了；第一段已经发出去了也一样）。
+                    只是又补了一句（不是叫停）不算，那个归打字刹车（默认关）。
   群里引用：只引用「找她的那一条」（@ 她 / 叫她名字 / 回复她 / 接着跟她聊）——不是那个人后来随手补的一句；
                     好几个人在等她回 → 她这句里提到了谁就引用谁的（没提就引用这一轮在回的那个人），一定引用（分得清回谁）；
                     她自己插话（没人找她）→ 不引用；只有一个人、找她那条之后群里没别人说话（一来一回）→ 不引用；私聊不引用。
@@ -30,6 +33,7 @@ DEFAULTS = {
     "typing_brake": False,  # 打字刹车：分段发的时候对方又说话了 → 后面没发的不发了（默认关）
     "brake_flood": 5,  # 群里她打字的时候又来了几句 就不往下发了
     "quote_mode": "smart",  # 群里引用哪条：smart = AstrBot 开了「引用回复」才管；always = 不管 AstrBot 开没开都由这里定；off = 不管
+    "halt": True,  # （v0.4.0）叫停：他撤回了她在回的那句 / 明确说「算了 / 不用了 / 别说了」→ 剩下没发的段不发了
 }
 
 QUOTE_MODES = ("smart", "always", "off")
@@ -42,6 +46,20 @@ SEG_MIN = 0.6  # 一条最少「打」几秒
 BRAKE_STRONG = re.compile(
     r"算了|不用了|不用回|别回了?|没事了|当我没说|不是问这个|不是这个意思|不是问你|说错了|发错了"
 )
+# 叫停（v0.4.0）：他明确不要她接着说了。只认开头就是这些的（前面可以有「那 / 哦 / 嗯」这种）：
+# 「我算了一下」「不用了解」不算；「不是问这个 / 说错了」这种改口不算叫停（归打字刹车）
+HALT = re.compile(
+    r"^(?:(?:那|就|哦|噢|嗯|唉|哎|啊|呃|好吧|行吧|哎呀|你)[，,\s]*){0,3}"
+    r"(?:算了(?![一下])|算啦|不用了(?!解)|不用回了?|不用说了|别回了?|别说了|别讲了|当我没说|没事了(?![吧吗？?])|不问了|发错了|打住|停停|闭嘴)"
+)
+
+
+def is_halt(text):
+    """这句是不是明确叫停（「算了」「不用了」「别说了」…，开头就是）；[图片] 这种标记、开头的空白不算"""
+    t = re.sub(r"\[[^\]]*\]", "", str(text or "")).strip()
+    return bool(t) and bool(HALT.search(t))
+
+
 # 这些只是应一声，不算「又说了一句」
 BRAKE_ACK = re.compile(
     r"(嗯+|哦+|噢+|好+的?|好吧|行+|ok|收到|哈+|嘿+|嘻+|2333*|666*|6+|草|笑死|确实|是的|对+)[!！。.~～]*",
@@ -105,19 +123,23 @@ class Ears:
         self.woke = {}  # (会话, 人) -> 他最近一条会再回他的消息的时间
         self.count = defaultdict(int)  # 会话 -> 一共来了几句（不算她自己）
         self.recalled = defaultdict(lambda: deque(maxlen=keep))  # 会话 -> 撤回的消息 id
+        self.stops = {}  # （v0.4.0）(会话, 人) -> (时间, 说的话)：他最近一次明确叫停（不是在跟别人说的）
 
-    def heard(self, key, uid, text, woke=False, t=None):
-        """有人说了一句（woke = 这句之后会再叫模型回他：私聊、@ 她、接她的话…）"""
+    def heard(self, key, uid, text, woke=False, t=None, to_other=False):
+        """有人说了一句（woke = 这句之后会再叫模型回他：私聊、@ 她、接她的话…；to_other = @ 别人 / 引用别人，在跟别人说）"""
         t = float(t or time.time())
         k = (str(key), str(uid))
         self.last[k] = (t, str(text or ""), bool(woke))
         if woke:
             self.woke[k] = t
+        if not to_other and is_halt(text):
+            self.stops[k] = (t, str(text or ""))
         self.count[str(key)] += 1
         if len(self.last) > 4000:  # 只涨不跌的表：清掉最旧的一半
             for x in sorted(self.last, key=lambda x: self.last[x][0])[:2000]:
                 self.last.pop(x, None)
                 self.woke.pop(x, None)
+                self.stops.pop(x, None)
 
     def wake(self, key, uid, t):
         """这一句后来决定要回他了（群聊节奏判断完才知道）"""
@@ -132,6 +154,20 @@ class Ears:
 
     def heard_n(self, key):
         return self.count.get(str(key), 0)
+
+    def halt_why(self, rnd):
+        """叫停了吗（v0.4.0）→ ("recall", 原因) / ("word", 原因) / None。
+        他把她在回的那句撤回了；或者她开始想以后，他明确说了「算了 / 不用了 / 别说了」（不是在跟别人说）。
+        不看打到哪了：第一段已经发出去了也一样，剩下的都不发。只是又补了一句不算（那个归打字刹车）"""
+        key, uid = str(rnd.get("key") or ""), str(rnd.get("uid") or "")
+        mids = {str(x) for x in rnd.get("mids") or () if x not in (None, "")}
+        if mids and mids & set(self.recalled.get(key, ())):
+            return "recall", "他把她在回的那句撤回了"
+        st = self.stops.get((key, uid))
+        if uid and st and st[0] > float(rnd.get("t0") or 0):
+            who = str(rnd.get("name") or "他")[:8]
+            return "word", f"{who}说「{st[1][:20]}」"
+        return None
 
     def why(self, rnd, strong=False, boundary=False):
         """要不要刹车 → 原因 / None
@@ -283,6 +319,10 @@ class Daily:
         "quote_moved",
         "quote_dropped",
         "quote_added",
+        "halted",  # （v0.4.0）叫停了几轮
+        "halt_recall",  # 其中因为他撤回了
+        "halt_word",  # 其中因为他说了「算了 / 不用了」
+        "halt_segs",  # 一共没发几段
     )
 
     def __init__(self, d=None):

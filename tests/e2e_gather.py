@@ -20,6 +20,10 @@ request_llm（fatfish_kind=chat）、带「拦住」的它停掉。
      没写 fatfish_kind、也没被唤醒的：并了，但不当成「直接找的」（不改 is_at_or_wake_command）
   J 被别的插件停掉的那条不并进来
   K 面板接口：今天合并了几次、省掉几次、最近几次合并；没登录读不到；面板页认得出
+  M 尾巴含糊才问（v0.3.0）：「我跟你说个事，」→ 问一次判断模型 → 它说「等 4」→ 他接着说的并进来；它说「回」→ 照常回；尾巴不含糊不问
+  N 私聊「正在输入」（v0.3.0）：QQ 端一直说他在输入 → 接着等、后面那句并进来
+  O 还排着没回、他撤回了（v0.4.0）：私聊发了一条马上撤回 → 不叫模型、不回；连发两条撤回后一条 → 只回前一条；
+     群里 @ 了马上撤回 → 不回；撤回通知比消息先到 → 这条一到就认出来、不回；面板 / 日志记了
 第二轮（重启）：关掉「私聊里攒」→ 私聊连发两条各回各的；「这些群不攒」里的群不攒；今天的数重启以后还在
 用法：python tests/e2e_astrbot.py [插件目录 默认上一层] [--keep]
   需要装了 astrbot（测过 4.29.3）的 Python，astrbot 命令在 PATH 里；另外要 aiohttp、pyjwt、websockets、Pillow（装 astrbot 时都会带上）
@@ -53,7 +57,8 @@ PLUGIN_SRC = Path(
 KEEP = "--keep" in sys.argv
 PNAME = PLUGIN_SRC.name
 SELF, HUMAN, HUMAN2, HUMAN3, HUMAN4, HUMAN5 = 99999, 30001, 30002, 30003, 30004, 30005
-G1, G2, G3, G4 = 7001, 7002, 7003, 7004
+HUMAN6, HUMAN7 = 30006, 30007  # （v0.4.0）撤回那几项用
+G1, G2, G3, G4, G5 = 7001, 7002, 7003, 7004, 7005
 RES = []
 
 
@@ -169,10 +174,37 @@ def images_in(m):
 
 
 # ───────────── 假模型 + 假图床 ─────────────
+TAIL = {"answer": "回"}
+tail_calls = []
+
+
 async def chat_completions(request):
     body = await request.json()
     msgs = body.get("messages") or []
     last = msgs[-1] if msgs else {}
+    system = "\n".join(text_of(m) for m in msgs if m.get("role") == "system")
+    if "对方是不是已经把这一串话说完了" in system:  # 攒一攒「尾巴含糊才问」（v0.3.0）
+        tail_calls.append({"t": time.time(), "body": text_of(last)})
+        return web.json_response(
+            {
+                "id": "x",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": body.get("model", "fake"),
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": TAIL["answer"]},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 50,
+                    "completion_tokens": 2,
+                    "total_tokens": 52,
+                },
+            }
+        )
     chat_calls.append(
         {
             "t": time.time(),
@@ -375,6 +407,21 @@ class FakeQQ:
     def replies(self, to, since):
         return [s for s in self.sent if s[0] == to and s[2] >= since]
 
+    async def recall(self, mid, uid, gid=None):
+        """（v0.4.0）他撤回了一条（QQ 的撤回通知）"""
+        ev = {
+            "post_type": "notice",
+            "notice_type": "group_recall" if gid else "friend_recall",
+            "user_id": uid,
+            "operator_id": uid,
+            "message_id": mid,
+            "self_id": SELF,
+            "time": int(time.time()),
+        }
+        if gid:
+            ev["group_id"] = gid
+        await self.ws.send(json.dumps(ev, ensure_ascii=False))
+
 
 def setup_root():
     env = dict(os.environ, ASTRBOT_ROOT=str(ROOT))
@@ -553,6 +600,83 @@ async def test_private_burst(qq):
         hist,
     )
     await wait_reply(qq, ("p", HUMAN), t1)
+
+
+async def test_tail(qq):
+    print("\n[M 尾巴含糊才问（v0.3.0）]")
+    TAIL["answer"] = "等 4"
+    n0, t0 = len(tail_calls), time.time()
+    await qq.say(HUMAN4, "我跟你说个事，")
+    await asyncio.sleep(2.6)  # 规则只等 2 秒；问了模型说再等 4 秒 → 这时候还没回
+    early = qq.replies(("p", HUMAN4), t0)
+    await qq.say(HUMAN4, "明天我们部门聚餐你来吗")
+    got = await wait_calls(["明天我们部门聚餐你来吗"], since=t0)
+    await wait_reply(qq, ("p", HUMAN4), t0)
+    await asyncio.sleep(1.5)
+    check(
+        len(tail_calls) >= n0 + 1 and "我跟你说个事，" in tail_calls[n0]["body"],
+        "尾巴含糊（逗号结尾）→ 问了一次判断模型（只给他这一串话）",
+        tail_calls[n0:],
+    )
+    check(not early, "模型说「等 4」：规则的 2 秒到了也没回", early)
+    check(
+        got
+        and "我跟你说个事，\n明天我们部门聚餐你来吗" in got[0]["last"]
+        and len(qq.replies(("p", HUMAN4), t0)) == 1,
+        "他接着说的那句并进来了，只回了一次",
+        got and got[0]["last"][:200],
+    )
+    TAIL["answer"] = "回"
+    n0, t1 = len(tail_calls), time.time()
+    await qq.say(HUMAN4, "好吧那就这样…")
+    rep = await wait_reply(qq, ("p", HUMAN4), t1)
+    took = (rep[0][2] - t1) if rep else 99
+    check(
+        len(tail_calls) == n0 + 1 and rep and took < 6.5,
+        f"模型说「回」：照常回（{took:.1f} 秒）",
+        (tail_calls[n0:], took),
+    )
+    n0, t2 = len(tail_calls), time.time()
+    await qq.say(HUMAN4, "我明白了谢谢你啊。")
+    await wait_reply(qq, ("p", HUMAN4), t2)
+    check(len(tail_calls) == n0, "尾巴不含糊：不问")
+
+
+async def test_typing(qq):
+    print("\n[N 私聊「正在输入」（v0.3.0）]")
+    t0 = time.time()
+    await qq.say(HUMAN5, "我跟你讲")
+    for _ in range(5):  # QQ 端每秒说一次「对方正在输入」，说 5 秒
+        await asyncio.sleep(1.0)
+        await qq.ws.send(
+            json.dumps(
+                {
+                    "post_type": "notice",
+                    "notice_type": "notify",
+                    "sub_type": "input_status",
+                    "user_id": HUMAN5,
+                    "group_id": 0,
+                    "event_type": 1,
+                    "status_text": "对方正在输入...",
+                    "self_id": SELF,
+                    "time": int(time.time()),
+                },
+                ensure_ascii=False,
+            )
+        )
+    early = qq.replies(("p", HUMAN5), t0)
+    await qq.say(HUMAN5, "今天晚上的电影我不去了")
+    got = await wait_calls(["今天晚上的电影我不去了"], since=t0)
+    await wait_reply(qq, ("p", HUMAN5), t0)
+    await asyncio.sleep(1.5)
+    check(not early, "QQ 端一直说他在输入：规则的 2 秒到了也没回", early)
+    check(
+        got
+        and "我跟你讲\n今天晚上的电影我不去了" in got[0]["last"]
+        and len(qq.replies(("p", HUMAN5), t0)) == 1,
+        "输入完发的那句并进来了，只回了一次",
+        got and got[0]["last"][:200],
+    )
 
 
 async def test_private_pic(qq):
@@ -968,6 +1092,71 @@ async def test_other_plugin(qq):
     )
 
 
+async def test_recall(qq):
+    print("\n[O 还排着没回、他撤回了（v0.4.0）]")
+    t0 = time.time()
+    await qq.say(HUMAN6, "O一帮我查个东西")
+    m1 = qq.mid
+    await asyncio.sleep(0.6)
+    await qq.recall(m1, HUMAN6)
+    await asyncio.sleep(4.0)
+    check(
+        not calls_with("O一", since=t0) and not qq.replies(("p", HUMAN6), t0),
+        "私聊发了一条、还在攒的时候他撤回了：不叫模型、不回（以前照样回）",
+        (calls_with("O一", since=t0), qq.replies(("p", HUMAN6), t0)),
+    )
+    t0 = time.time()
+    await qq.say(HUMAN6, "O二在吗")
+    await asyncio.sleep(0.5)
+    await qq.say(HUMAN6, "O二问你个事情好不好呀")
+    m2 = qq.mid
+    await asyncio.sleep(0.4)
+    await qq.recall(m2, HUMAN6)
+    got = await wait_calls(["O二在吗"], since=t0)
+    await wait_reply(qq, ("p", HUMAN6), t0)
+    await asyncio.sleep(2.0)
+    check(
+        got
+        and "O二问你个事情" not in got[0]["last"]
+        and len(calls_with("O二", since=t0)) == 1
+        and len(qq.replies(("p", HUMAN6), t0)) == 1,
+        "私聊连发两条、他把后一条撤回了：只回前一条（模型收到的没有撤回的那句、只回一次）",
+        (
+            [c["last"][-80:] for c in calls_with("O二", since=t0)],
+            qq.replies(("p", HUMAN6), t0),
+        ),
+    )
+    t0 = time.time()
+    await qq.say(HUMAN7, "O三帮我看看这个", gid=G5, at_bot=True)
+    m3 = qq.mid
+    await asyncio.sleep(0.5)
+    await qq.recall(m3, HUMAN7, gid=G5)
+    await asyncio.sleep(4.0)
+    check(
+        not calls_with("O三", since=t0) and not qq.replies(("g", G5), t0),
+        "群里 @ 了它马上撤回：不叫模型、不回",
+        (calls_with("O三", since=t0), qq.replies(("g", G5), t0)),
+    )
+    t0 = time.time()
+    await qq.recall(qq.mid + 1, HUMAN6)  # 撤回通知先到（这条还没到）
+    await asyncio.sleep(0.3)
+    await qq.say(HUMAN6, "O四这条早就撤回了")
+    await asyncio.sleep(4.0)
+    check(
+        not calls_with("O四", since=t0) and not qq.replies(("p", HUMAN6), t0),
+        "撤回通知比消息先到：这条一到就认出来，不回",
+        (calls_with("O四", since=t0), qq.replies(("p", HUMAN6), t0)),
+    )
+    text = log_text()
+    check(
+        "把还排着的那条撤回了 → 这一轮不回" in text
+        and "把最后那条撤回了 → 只回前面的 1 条" in text
+        and "撤回通知比消息先到" in text,
+        "日志里写了「撤回了 → 不回 / 只回前面的」",
+        [x for x in text.splitlines() if "撤回" in x][-5:],
+    )
+
+
 async def test_panel():
     print("\n[K 面板接口]")
     token = jwt.encode(
@@ -987,6 +1176,11 @@ async def test_panel():
             )
         st = ((d or {}).get("data") or {}).get("gather") or {}
         today = st.get("today") or {}
+        check(
+            today.get("recall_skip", 0) >= 3 and today.get("recalled", 0) >= 4,
+            f"面板（v0.4.0）：他撤回了 → 少并了 {today.get('recalled')} 条、{today.get('recall_skip')} 轮没回",
+            today,
+        )
         check(
             r.status == 200
             and today.get("merges", 0) >= 6
@@ -1105,6 +1299,9 @@ async def main():
         await test_command(qq)
         await test_other_plugin(qq)
         check_cap(qq, *(await cap))
+        await test_tail(qq)
+        await test_typing(qq)
+        await test_recall(qq)
         today = await test_panel()
         text = log_text()
         check(

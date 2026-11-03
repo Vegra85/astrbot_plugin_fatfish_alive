@@ -494,6 +494,19 @@ async def main():
         DASHBOARD_PORT=str(DASH_PORT),
         PYTHONUNBUFFERED="1",
     )
+    for k in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        env[k] = (
+            "http://127.0.0.1:9"  # （v0.4.0 补上）AstrBot 启动时自己想连外网：让它连不出去（测试不连外网）
+        )
+    env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1,localhost"
+    env["ASTRBOT_DISABLE_METRICS"] = "1"
     log = open(ROOT / "astrbot_stdout.log", "w", encoding="utf-8")
     proc = subprocess.Popen(
         [ASTRBOT, "run"], cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT

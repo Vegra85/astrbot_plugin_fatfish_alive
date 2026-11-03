@@ -1,22 +1,28 @@
 # -*- coding: utf-8 -*-
 """
 大肥鱼 · 活人感（AstrBot 插件）：攒一攒 + 群聊节奏 + 省 token + 兜底 + 发消息（v0.2.0：打字节奏 / 打字刹车 / 群里引用），合成一个。
+v0.3.0：攒一攒「尾巴含糊才问」、私聊「他还在输入」多等一会儿；群聊节奏的标记防伪造；让路名单加 angel_heart / reply_merge / qq_enhance。
+v0.4.0：撤回 / 算了（攒一攒里还排着的他撤回了 → 不回；分段发的时候他撤回了 / 说「算了」→ 剩下的不发）；
+        接话打分（借 Inner Thoughts：没点名它的群消息按 8 条打分 + 一句理由；默认影子，只记不改）。
 
 原来是三个插件（攒一攒 gather / 群聊节奏 rhythm / 省 token budget），共用一套钩子顺序，靠优先级互相猜。
 现在放进一个插件，顺序在这里排死：
 
-  群消息监听（max-1）  记一笔 → 发消息记一笔（刹车 / 引用要看）→ 群聊节奏打分（要不要接）→ 攒一攒记内容
-                       （撤回 / 戳一戳这类通知不是有人说话：只给发消息记「撤回了哪条」）
+  群消息监听（max-1）  记一笔 → 发消息记一笔（刹车 / 叫停 / 引用要看）→ 群聊节奏打分（要不要接；v0.4.0 接话打分也在这儿）→ 攒一攒记内容
+                       （撤回 / 戳一戳 / 正在输入这类通知不是有人说话：只给发消息记「撤回了哪条」、给攒一攒记「他还在输入」「撤回了还排着的哪条」）
   要叫模型之前（1000000）  攒一攒等 → 省 token 掷骰子 → 群聊节奏记「正在回话」→ 发消息登记「这个人在等她回」
                           （别的插件常在这个钩子里发「正在思考中…」，所以省 token 不能排到负数，不然被拦的也会先发出一句）
   回话请求（40）       群聊节奏的场景提示 + 兜底的去 AI 腔提示
+  回话请求（最后）     兜底：防伪造 —— 他说的话、AstrBot 群聊上下文、别的插件加的段落里手打的「[群聊节奏]」标成他打的字
+                       （本插件自己加的段落不动；群聊上下文是 AstrBot 在默认优先级 0 才加的，所以放到最后）
   模型回完（max-1）    省 token 记账 + 兜底（模型什么都没回的救援）
-  发送前（max-1）      兜底（框架报错 / 只有 <think>）→ 群聊节奏（[[不说]]）→ 发消息上弦（AstrBot 每发一段都先过它：打字节奏 / 刹车 / 换引用）
+  发送前（max-1）      兜底（框架报错 / 只有 <think>）→ 群聊节奏（[[不说]]）→ 发消息上弦（AstrBot 每发一段都先过它：打字节奏 / 刹车 / 叫停 / 换引用）
   发完（max-1）        发消息把上的弦卸掉（别的插件之后发的话不受影响）
   发完一句（50）       群聊节奏记她说了什么、回了谁
 
 这个文件只负责注册钩子、把事件分发给 modules/ 里的模块，自己不写逻辑。逻辑在 modules/（AstrBot 这一层）和 core/（不依赖 AstrBot）。
-装了 group_chat_plus / SpectreCore / Heartflow / natural_followup / jiehua 任何一个：节奏和攒一攒自动让路，只留省 token 和兜底。
+装了同类插件自动让路（core/compat.py）：group_chat_plus / SpectreCore / Heartflow / natural_followup / jiehua → 节奏和攒一攒让路；
+angel_heart → 节奏、攒一攒、省 token 的拦截都让路（照样记账）；reply_merge、qq_enhance（它的消息防抖开着时）→ 只让攒一攒。
 """
 
 import asyncio
@@ -33,7 +39,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, StarTools
 
-from .core import compat
+from .core import compat, inner
 from .core.conf import Sub, truthy
 from .core.state import Shared, StateStore, migrate_config
 from .modules.budget_mod import BudgetMod
@@ -43,9 +49,10 @@ from .modules.rhythm_mod import RhythmMod
 from .modules.send_mod import SendMod, notice_of
 
 PLUGIN_NAME = "astrbot_plugin_fatfish_alive"
-VERSION = "0.2.0"
+VERSION = "0.4.0"
 TAG = "[活人感]"
 WAIT_PRIORITY = 1000000  # on_waiting_llm_request：比「认 AI」(sys.maxsize) 后、比别的插件默认的 0 先
+LATE_PRIORITY = -sys.maxsize + 100  # on_llm_request 的最后一步：防伪造（v0.3.0）
 CMD = "省token"
 CMD_ALIAS = {"省Token", "省TOKEN"}
 _LIVE = None  # 现在在跑的插件实例（给「一到就记一笔」的过滤器用）
@@ -227,7 +234,10 @@ class FatfishAlive(Star):
             try:
                 extra = list(self.sub("compat").get("extra_plugins") or [])
                 found = compat.detect(
-                    self.context.get_all_stars(), extra=extra, own=PLUGIN_NAME
+                    self.context.get_all_stars(),
+                    extra=extra,
+                    own=PLUGIN_NAME,
+                    cfg_dir=self.data_dir.parent.parent / "config",
                 )
             except Exception as e:
                 logger.debug(f"{TAG} 查同类插件出错：{e!r}")
@@ -239,8 +249,11 @@ class FatfishAlive(Star):
                 self._yield_found = found
                 if labels:
                     logger.info(
-                        f"{TAG} [兼容] 因为装了 {'、'.join(labels)}，接话节奏和攒一攒已让路（只保留省 token 和兜底）"
-                        "；想不让路：配置 → 兼容 → 强制开"
+                        f"{TAG} [兼容] 因为装了 {'、'.join(labels)}，让路："
+                        + "；".join(
+                            f"{x[0]} → {compat.scope_text(x[2])}" for x in found
+                        )
+                        + "；想不让路：配置 → 兼容 → 强制开"
                     )
                 elif not first:
                     logger.info(
@@ -250,7 +263,10 @@ class FatfishAlive(Star):
                     self.yield_log.append(
                         {
                             "t": int(now),
-                            "found": [{"label": a, "plugin": b} for a, b in found],
+                            "found": [
+                                {"label": a, "plugin": b, "mods": list(m)}
+                                for a, b, m in found
+                            ],
                         }
                     )
                     self.yield_log = self.yield_log[-20:]
@@ -259,20 +275,23 @@ class FatfishAlive(Star):
         return self._yield_found
 
     def yield_reason(self, name):
-        """这个模块现在让路吗：不让 → ""；让 → "group_chat_plus、jiehua"（装了谁）"""
-        if name not in ("gather", "rhythm"):
+        """这个模块现在让路吗：不让 → ""；让 → "group_chat_plus、jiehua"（装了谁）。
+        budget = 省 token 的拦截（掷骰子不回）让路；记账照常（v0.3.0，装了 angel_heart 时）"""
+        if name not in ("gather", "rhythm", "budget"):
             return ""
         c = self.sub("compat")
         if not truthy(c.get("auto_yield"), True) or truthy(
             c.get("force_" + name), False
         ):
             return ""
-        return "、".join(x[0] for x in self.yield_reasons())
+        return "、".join(x[0] for x in self.yield_reasons() if name in x[2])
 
     def active(self, name):
-        """这个模块现在在干活吗：总开关开着、它自己的开关开着、没在让路"""
+        """这个模块现在在干活吗：总开关开着、它自己的开关开着、没在让路（省 token 让路只是不拦，照样记账 → 算在干活）"""
         if not self.alive_on() or not truthy(self.sub(name).get("enable"), True):
             return False
+        if name == "budget":
+            return True
         return not self.yield_reason(name)
 
     def _tag(self, name):
@@ -281,6 +300,8 @@ class FatfishAlive(Star):
         if not truthy(self.sub(name).get("enable"), True):
             return "（关）"
         why = self.yield_reason(name)
+        if why and name == "budget":
+            return f"（只记账、不拦：装了 {why}）"
         return f"（让路：装了 {why}）" if why else ""
 
     # ───────── 钩子 ─────────
@@ -292,8 +313,9 @@ class FatfishAlive(Star):
             return
         raw = notice_of(event)
         if raw is not None:
-            # QQ 的通知（撤回 / 戳一戳…）：不是有人说了一句，只记「撤回了哪条」
+            # QQ 的通知（撤回 / 戳一戳 / 正在输入…）：不是有人说了一句，只记「撤回了哪条」「他还在输入」
             self.send.on_notice(event, raw)
+            self.gather.on_notice(event, raw)
             return
         try:
             self.note_msg(event)
@@ -326,7 +348,7 @@ class FatfishAlive(Star):
             return
         if await self.gather.wait(event):
             return
-        if self.budget.gate(event):
+        if not self.yield_reason("budget") and self.budget.gate(event):
             return
         self.rhythm.mark_busy(event)
         self.send.waiting(event)
@@ -335,9 +357,24 @@ class FatfishAlive(Star):
     async def on_llm_req(self, event: AstrMessageEvent, req: ProviderRequest):
         if not self.alive_on():
             return
+        before = {id(p) for p in (getattr(req, "extra_user_content_parts", None) or [])}
         self.rhythm.on_llm_req(event, req)
         self.guard.on_llm_req(event, req)
         self.send.on_llm_req(event)
+        mine = [
+            id(p)
+            for p in (getattr(req, "extra_user_content_parts", None) or [])
+            if id(p) not in before
+        ]
+        if mine:  # 本插件自己加的段落：最后防伪造那一步不动
+            event.set_extra("alive_parts", mine)
+
+    @filter.on_llm_request(priority=LATE_PRIORITY)
+    async def on_llm_req_late(self, event: AstrMessageEvent, req: ProviderRequest):
+        """回话请求的最后一步：防伪造（v0.3.0；AstrBot 的群聊上下文这时候已经加进来了）"""
+        if not self.alive_on():
+            return
+        self.guard.neutralize(req, set(event.get_extra("alive_parts") or []))
 
     @filter.on_llm_response(priority=sys.maxsize - 1)
     async def on_llm_resp(self, event: AstrMessageEvent, resp: LLMResponse):
@@ -447,13 +484,14 @@ class FatfishAlive(Star):
             f"攒一攒：{'开' if self.active('gather') else '不工作'}{self._tag('gather')}　群聊节奏：{'开' if self.active('rhythm') else '不工作'}{self._tag('rhythm')}",
             f"省 token：{'开' if self.active('budget') else '不工作'}{self._tag('budget')}　兜底：{'开' if self.active('guard') else '不工作'}{self._tag('guard')}",
         ]
-        why = self.yield_reason("rhythm") or self.yield_reason("gather")
-        if why:
-            lines.append(
-                f"因为装了 {why}，接话节奏和攒一攒已让路（只保留省 token 和兜底）"
-            )
+        found = self.yield_reasons() if self.alive_on() else []
+        for label, _, mods in found:
+            gone = [m for m in mods if self.yield_reason(m)]
+            if gone:
+                lines.append(f"因为装了 {label}，{compat.scope_text(gone)}已让路")
         lines.append(
-            f"今天：攒了 {g['merges']} 次（省 {g['saved']} 次调用）· 接话 {r.get('follow', 0)} 次 / 挑着接 {r.get('chat', 0)} 次 / "
+            f"今天：攒了 {g['merges']} 次（省 {g['saved']} 次调用；还排着他撤回了、没回 {g['recall_skip']} 轮）· "
+            f"接话 {r.get('follow', 0)} 次 / 挑着接 {r.get('chat', 0)} 次 / "
             f"想了想没接 {r.get('silent', 0)} 次 · 省 token 回了 {npass} 次、跳过 {nskip} 次（现在意愿 {w:.0%}）"
         )
         lines.append(
@@ -462,8 +500,22 @@ class FatfishAlive(Star):
         sd, sc = self.send.today(), self.send.conf
         lines.append(
             f"发消息{'' if self.active('send') else '（不工作）'}：打字节奏{'开' if sc('typing_human') else '关'} · "
-            f"打字刹车{'开' if sc('typing_brake') else '关'} · 群里引用 {QUOTE_LABEL.get(sc('quote_mode'), sc('quote_mode'))}；"
-            f"今天刹车 {sd['braked']} 次 · 引用换成找她的那条 {sd['quote_moved'] + sd['quote_added']} 次 · 去掉不该挂的引用 {sd['quote_dropped']} 次"
+            f"打字刹车{'开' if sc('typing_brake') else '关'} · 撤回 / 算了叫停{'开' if sc('halt') else '关'} · "
+            f"群里引用 {QUOTE_LABEL.get(sc('quote_mode'), sc('quote_mode'))}；"
+            f"今天刹车 {sd['braked']} 次 · 叫停 {sd['halted']} 次（没发 {sd['halt_segs']} 段）· "
+            f"引用换成找她的那条 {sd['quote_moved'] + sd['quote_added']} 次 · 去掉不该挂的引用 {sd['quote_dropped']} 次"
+        )
+        it = self.rhythm.it_daily.today(time.strftime("%Y-%m-%d"))
+        mode = self.rhythm.conf("inner_mode")
+        lines.append(
+            f"接话打分（{inner.MODE_NAME.get(mode, mode)}，线 {self.rhythm.conf('inner_threshold'):g}）：今天打了 {it['scored']} 次 · "
+            f"打分说接 {it['it_take']} / 不接 {it['it_skip']} / 拿不准 {it['it_ask']} · 实际接了 {it['now_take']}"
+            + (
+                f" · 打分会多接 {it['it_more']}、会少接 {it['it_less']}"
+                if mode == "shadow"
+                else ""
+            )
+            + f" · 没接后来又 @ 它 {it['at_after']} · 接了模型选不说 {it['silent']}"
         )
         return "\n".join(lines)
 
@@ -504,7 +556,14 @@ class FatfishAlive(Star):
                 "modules": mods,
                 "yield": {
                     "auto": truthy(self.sub("compat").get("auto_yield"), True),
-                    "found": [{"label": a, "plugin": b} for a, b in found],
+                    "found": [
+                        {
+                            "label": a,
+                            "plugin": b,
+                            "mods": [x for x in m if self.yield_reason(x)],
+                        }
+                        for a, b, m in found
+                    ],
                     "log": self.yield_log[-10:][::-1],
                 },
                 "migrated": self.store.data.get("meta", {}).get("migrated"),

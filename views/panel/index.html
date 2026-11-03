@@ -88,6 +88,13 @@
 #sec-r button { font:inherit; font-size:12px; padding:2px 10px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); cursor:pointer; }
 #sec-r button:hover { border-color:var(--accent); color:var(--accent); }
 #sec-r #r-err { color:var(--bad); }
+#sec-r .bars { display:grid; grid-template-columns:repeat(auto-fit,minmax(112px,1fr)); gap:4px 12px; margin-top:6px; }
+#sec-r .bar { display:grid; grid-template-columns:56px 1fr 28px; gap:6px; align-items:center; font-size:12px; color:var(--muted); }
+#sec-r .bar .meter { height:6px; border-radius:3px; background:var(--track); overflow:hidden; }
+#sec-r .bar .meter i { display:block; height:100%; border-radius:3px; background:var(--series); }
+#sec-r .bar .v { text-align:right; font-variant-numeric:tabular-nums; color:var(--fg); }
+#sec-r .tag.warn { color:var(--warnfg); border-color:var(--warnfg); }
+#sec-r .grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
 #sec-b .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; }
 #sec-b .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; min-width:0; }
 #sec-b .card b { display:block; font-size:22px; font-weight:600; }
@@ -187,6 +194,7 @@
 <div class="cards">
   <div class="card"><b id="o-s-typed">-</b><span>按打字节奏发的轮数</span></div>
   <div class="card"><b id="o-s-braked">-</b><span>打字刹车：没发完就停的</span></div>
+  <div class="card"><b id="o-s-halted">-</b><span>撤回 / 算了：叫停几轮（没发几段）</span></div>
   <div class="card"><b id="o-s-moved">-</b><span>引用换成找她的那一条</span></div>
   <div class="card"><b id="o-s-dropped">-</b><span>去掉不该挂的引用</span></div>
 </div>
@@ -205,8 +213,11 @@
   <div class="card"><b id="g-n-msgs">-</b><span>合并进去的消息</span></div>
   <div class="card"><b id="g-n-turns">-</b><span>今天叫模型回话</span></div>
   <div class="card"><b id="g-n-wait">-</b><span>现在正在等的</span></div>
+  <div class="card"><b id="g-n-tail">-</b><span>尾巴含糊：问了 / 多等了</span></div>
+  <div class="card"><b id="g-n-typing">-</b><span>他还在输入：多等了几次</span></div>
+  <div class="card"><b id="g-n-recall">-</b><span>他撤回了：少并几条 / 不回几轮</span></div>
 </div>
-<p class="info">私聊：<b id="g-i-private">-</b> · 群里：<b id="g-i-group">-</b> · 基础等 <b id="g-i-base">-</b> 秒 · 只有图多等 <b id="g-i-pic">-</b> 秒 · 问句只等 <b id="g-i-quick">-</b> 秒 · 最多 <b id="g-i-max">-</b> 秒</p>
+<p class="info">私聊：<b id="g-i-private">-</b> · 群里：<b id="g-i-group">-</b> · 基础等 <b id="g-i-base">-</b> 秒 · 只有图多等 <b id="g-i-pic">-</b> 秒 · 问句只等 <b id="g-i-quick">-</b> 秒 · 最多 <b id="g-i-max">-</b> 秒 · 尾巴含糊：<b id="g-i-tail">-</b> · 他还在输入：<b id="g-i-typing">-</b></p>
 
 <h2>最近几次合并</h2>
 <div class="list" id="g-recent"></div>
@@ -232,6 +243,12 @@
 
 <h2>最近的接话判断</h2>
 <div class="list" id="r-decisions"></div>
+
+<h2>接话打分（8 条理由，v0.4.0）</h2>
+<p class="info" id="r-it-mode"></p>
+<div class="grid2" id="r-it-cards"></div>
+<p class="info" id="r-it-note"></p>
+<div class="list" id="r-it-recent" style="margin-top:8px"></div>
 
 <h2>最近主动说的（试探 / 收尾）</h2>
 <div class="list" id="r-lines"></div>
@@ -320,12 +337,17 @@
     $("n-msgs").textContent = t.msgs || 0;
     $("n-turns").textContent = t.turns || 0;
     $("n-wait").textContent = (d.waiting || []).length;
+    $("n-tail").textContent = (t.tail_asks || 0) + " / " + (t.tail_waits || 0);
+    $("n-typing").textContent = t.typing_waits || 0;
+    $("n-recall").textContent = (t.recalled || 0) + " / " + (t.recall_skip || 0);
     $("i-private").innerHTML = c.enable === false ? '<span class="off">插件关着</span>' : onoff(c.private);
     $("i-group").innerHTML = c.enable === false ? '<span class="off">插件关着</span>' : onoff(c.group);
     $("i-base").textContent = c.base_sec == null ? "-" : c.base_sec;
     $("i-pic").textContent = c.pic_extra_sec == null ? "-" : c.pic_extra_sec;
     $("i-quick").textContent = c.quick_sec == null ? "-" : c.quick_sec;
     $("i-max").textContent = c.max_sec == null ? "-" : c.max_sec;
+    $("i-tail").textContent = c.tail_vague === false ? "不管" : (c.tail_ask === false ? "固定多等 " + c.tail_extra_sec + " 秒" : "问一下模型（最多 " + c.tail_ask_max + " 次）");
+    $("i-typing").textContent = c.typing_wait === false ? "不等" : "最多多等 " + c.typing_extra_sec + " 秒";
     const rows = (d.recent || []).map((r) => '<div class="item"><div class="meta"><span>' + ago(r.t) + "</span><span>" +
       esc(r.where || "") + '</span><span class="who">' + esc(r.who || "") + "</span>" +
       (r.pics ? '<span class="tag">' + esc(r.pics) + " 张图</span>" : "") +
@@ -351,7 +373,38 @@ window.__alive.mods.g = {render: render, setApi: function (a) { api = a; }};
     return Math.floor(s / 86400) + " 天前";
   };
   const mins = (sec) => sec >= 60 ? Math.round(sec / 6) / 10 + " 分钟" : Math.max(0, Math.round(sec)) + " 秒";
-  const VERDICT = { yes: ["分够了", "yes"], no: ["分不够", "no"], model_yes: ["模型说是", "yes"], model_no: ["模型说不是", "no"], model_fail: ["模型没答", "no"] };
+  const VERDICT = { yes: ["分够了", "yes"], no: ["分不够", "no"], model_yes: ["模型说是", "yes"], model_no: ["模型说不是", "no"], model_fail: ["模型没答", "no"],
+                    inner_yes: ["打分过线", "yes"], inner_no: ["打分没过", "no"] };
+  const IT_V = { take: ["打分：接", "yes"], skip: ["打分：不接", "no"], ask: ["打分：拿不准（会问模型）", "warn"] };
+  const IT_OUT = { at_after: "没接、后来他又 @ 了它（多半漏接）", silent: "接了、模型选了不说（多半不该插）" };
+
+  function renderInner(it) {
+    const t = it.today || {}, names = it.names || {}, keys = it.keys || [];
+    const live = it.mode === "live", off = it.mode === "off";
+    $("it-mode").innerHTML = "现在：<b>" + (live ? "生效（按分数决定接不接）" : off ? "关（不打分）" : "影子（只算分、记理由，接不接照旧）") + "</b> · 过 <b>" +
+      esc(it.threshold) + "</b> 分接（线上下 " + esc(it.band) + " 分以内算拿不准）· 沉默加成每过一句 ×" + esc(it.growth) + "、最多 ×" + esc(it.cap) +
+      " · 记录留 " + esc(it.log_days) + " 天（plugin_data 里的 inner 文件夹）";
+    const card = (v, l) => '<div class="card"><b>' + esc(v) + "</b><span>" + esc(l) + "</span></div>";
+    const cards = [card(t.scored || 0, "今天打了几次分"), card((t.it_take || 0) + " / " + (t.it_skip || 0) + " / " + (t.it_ask || 0), "打分说 接 / 不接 / 拿不准"),
+      card(t.now_take || 0, live ? "实际接了（按打分）" : "实际接了（原来的规则）")];
+    if (!live) cards.push(card(t.agree || 0, "两边一样"), card(t.it_more || 0, "打分会多接（生效后多出来的）"), card(t.it_less || 0, "打分会少接（生效后不接了的）"));
+    cards.push(card((t.at_after || 0) + "（打分也不接 " + (t.at_after_it_skip || 0) + "）", "没接、后来他又 @ 了它"),
+      card((t.silent || 0) + "（打分也会接 " + (t.silent_it_take || 0) + "）", "接了、模型选了不说"));
+    $("it-cards").innerHTML = cards.join("");
+    $("it-note").textContent = live ? "生效时：收尾句不接、同一个人不 @ 最多接几轮、在线时挑着接的间隔和次数、省 token 照旧管。" :
+      "影子里看两样：「打分会多接」的那几条该不该接（误插）；「没接、后来他又 @ 了它」里打分说接的那几条（原来的规则漏了、打分能补上）。看够几天再把配置里的「接话打分」切成生效。";
+    $("it-recent").innerHTML = (it.recent || []).map((x) => {
+      const v = IT_V[x.it] || [x.it || "-", "no"], s = x.s || {};
+      const bars = keys.map((k) => '<div class="bar" title="' + esc(names[k] || k) + '"><span>' + esc(names[k] || k) + '</span><span class="meter"><i style="width:' +
+        Math.round(Math.max(0, Math.min(5, Number(s[k]) || 0)) / 5 * 100) + '%"></i></span><span class="v">' + esc(s[k]) + "</span></div>").join("");
+      const now = x.now ? '<span class="tag yes">实际接了</span>' : '<span class="tag no">实际没接</span>';
+      const outs = (x.out || []).map((o) => '<span class="tag warn">' + esc(IT_OUT[o] || o) + "</span>").join("");
+      return '<div class="item"><div class="meta"><span>' + ago(x.t) + "</span><span>群 " + esc(x.g) + '</span><span class="who">' + esc(x.who) +
+        '</span><span class="tag ' + v[1] + '">' + esc(v[0]) + "</span>" + now + outs + (x.judge ? '<span class="tag">模型说' + (x.judge === "yes" ? "是" : x.judge === "no" ? "不是" : "没答") + "</span>" : "") +
+        '<span class="right">' + esc(x.total) + " 分" + (x.boost > 1 ? "（×" + esc(x.boost) + "）" : "") + '</span></div><div class="text">' + esc(x.text) +
+        '</div><div class="why">' + esc(x.why) + (x.block ? "；" + esc(x.block) : "") + '</div><div class="bars">' + bars + "</div></div>";
+    }).join("") || '<div class="empty">还没有。它在群里说完话的一小会儿里、或者在线聊着的时候，有人没 @ 它说话，就会在这里看到 8 条的分和理由。</div>';
+  }
   let api = null;
 
   function groupRow(g) {
@@ -398,6 +451,7 @@ window.__alive.mods.g = {render: render, setApi: function (a) { api = a; }};
         esc(v[0]) + '</span><span class="right">' + esc(x.score) + ' 分</span></div><div class="text">' + esc(x.text) +
         '</div><div class="why">' + esc(x.why) + "</div></div>";
     }).join("") || '<div class="empty">还没有。机器人在群里说完话的一小会儿里，有人没 @ 它说话，就会在这里看到判断。</div>';
+    renderInner(d.inner || {});
     $("lines").innerHTML = (d.lines || []).map((x) =>
       '<div class="item"><div class="meta"><span>' + ago(x.t) + "</span><span>群 " + esc(x.g) + '</span><span class="tag">' +
       (x.kind === "exit" ? "收尾" : "试探") + '</span></div><div class="text">' + esc(x.text) + "</div></div>").join("") ||
@@ -688,13 +742,14 @@ window.__alive.mods.b = {render: render, setApi: function (a) { api = a; }, redr
   const sum = (o) => Object.values(o || {}).reduce((a, b) => a + (Number(b) || 0), 0);
   const NAMES = { gather: "攒一攒", rhythm: "群聊节奏", budget: "省 token", guard: "兜底", send: "发消息" };
   const TABS = { gather: "g", rhythm: "r", budget: "b" };
-  const NOTE = { gather: "连着发的几条等一等、并成一次回", rhythm: "没 @ 也接话、在线聊一阵、冷场试探、收尾潜水", budget: "花得多了就少回一点；火力全开", guard: "报错不外发、空回补一次、去 <think>", send: "打字节奏、打字刹车、群里只引用找她的那一条" };
+  const NOTE = { gather: "连着发的几条等一等、并成一次回；还排着的他撤回了就不回", rhythm: "没 @ 也接话、在线聊一阵、冷场试探、收尾潜水；接话打分（8 条理由）", budget: "花得多了就少回一点；火力全开", guard: "报错不外发、空回补一次、去 <think>", send: "打字节奏、打字刹车、撤回 / 算了叫停、群里只引用找她的那一条" };
   let api = null;
 
   function status(a, name) {
     const m = (a.modules || {})[name] || {};
     if (a.enabled === false) return ['st-off', "总开关关着"];
     if (m.enable === false) return ['st-off', "已关（配置里关了）"];
+    if (m.yield && name === "budget") return ['st-yield', "只记账、不拦：装了 " + m.yield];
     if (m.yield) return ['st-yield', "让路中：装了 " + m.yield];
     return ['st-on', "工作中"];
   }
@@ -714,16 +769,18 @@ window.__alive.mods.b = {render: render, setApi: function (a) { api = a; }, redr
     }).join("");
     $("o-ver").textContent = "活人感 v" + (a.version || "?") + " · 总开关：" + (a.enabled === false ? "关" : "开");
     const y = a.yield || {}, found = y.found || [];
+    const MODS = { gather: "攒一攒", rhythm: "群聊节奏", budget: "省 token 的拦截（照样记账）" };
+    const scope = (x) => (x.mods || ["gather", "rhythm"]).length ? (x.mods || ["gather", "rhythm"]).map((k) => MODS[k] || k).join("、") + "让路" : "强制开了，不让路";
     $("o-yield-now").innerHTML = !y.auto ? "自动让路：<b>关</b>（配置 → 兼容）。" :
-      found.length ? "检测到 <b>" + esc(found.map((x) => x.label).join("、")) + "</b>：攒一攒和群聊节奏已让路，只保留省 token 和兜底。想不让路：配置 → 兼容 → 强制开。" :
-      "没有检测到同类插件（group_chat_plus / SpectreCore / Heartflow / natural_followup / jiehua 等），全部模块照常工作。";
+      found.length ? "检测到 " + found.map((x) => "<b>" + esc(x.label) + "</b>（" + esc(scope(x)) + "）").join("、") + "。想不让路：配置 → 兼容 → 强制开。" :
+      "没有检测到同类插件（group_chat_plus / SpectreCore / Heartflow / natural_followup / jiehua / angel_heart / reply_merge / qq_enhance 等），全部模块照常工作。";
     $("o-yield-log").innerHTML = (y.log || []).map((x) => '<div class="item"><span class="t">' + esc(ago(x.t)) + "</span><span>" +
       ((x.found || []).length ? "因为装了 " + esc(x.found.map((f) => f.label).join("、")) + " 让路" : "同类插件没有了，恢复工作") + "</span></div>").join("") ||
       '<div class="empty">还没有让路记录。</div>';
     const ban = document.getElementById("y-top");
     ban.style.display = a.enabled === false ? "block" : (found.length && y.auto ? "block" : "none");
     ban.textContent = a.enabled === false ? "活人感总开关关着：所有模块都不工作。" :
-      "因为装了 " + found.map((x) => x.label).join("、") + "，攒一攒和群聊节奏已让路（强制开的除外）。";
+      "因为装了同类插件，" + found.map((x) => x.label + "：" + scope(x)).join("；") + "。";
     document.getElementById("o-g-errors").textContent = dt.errors || 0;
     document.getElementById("o-g-think").textContent = dt.think_stripped || 0;
     document.getElementById("o-g-rescued").textContent = dt.rescued || 0;
@@ -739,14 +796,18 @@ window.__alive.mods.b = {render: render, setApi: function (a) { api = a; }, redr
     const sd = d.send || {}, st = sd.today || {}, sc = sd.config || {};
     document.getElementById("o-s-typed").textContent = st.typed || 0;
     document.getElementById("o-s-braked").textContent = st.braked || 0;
+    document.getElementById("o-s-halted").textContent = (st.halted || 0) + "（" + (st.halt_segs || 0) + " 段）";
     document.getElementById("o-s-moved").textContent = (st.quote_moved || 0) + (st.quote_added || 0);
     document.getElementById("o-s-dropped").textContent = st.quote_dropped || 0;
     const QM = { smart: "跟着 AstrBot 的「引用回复」（开了才管）", always: "插件自己定", off: "不管" };
     $("o-s-cfg").textContent = "打字节奏：" + (sc.typing_human ? "开（每秒 " + sc.typing_cps + " 字，一条最多 " + sc.typing_max_sec + " 秒）" : "关（默认）") +
-      " · 打字刹车：" + (sc.typing_brake ? "开" : "关（默认）") + " · 群里引用：" + (QM[sc.quote_mode] || sc.quote_mode || "-");
-    $("o-s-recent").innerHTML = (sd.recent || []).map((x) => '<div class="item"><span class="t">' + esc(ago(x.t)) + '</span><span class="tag">刹车</span><span>' +
-      esc((x.where || "") + " " + (x.who || "")) + "：发了 " + esc(x.sent) + " 段，" + esc(x.why) + '</span><span class="t">没发：' + esc(x.left) + "</span></div>").join("") ||
-      '<div class="empty">今天没刹过车。</div>';
+      " · 打字刹车：" + (sc.typing_brake ? "开" : "关（默认）") + " · 撤回 / 算了叫停：" + (sc.halt === false ? "关" : "开（默认）") +
+      " · 群里引用：" + (QM[sc.quote_mode] || sc.quote_mode || "-");
+    $("o-s-recent").innerHTML = (sd.recent || []).map((x) => '<div class="item"><span class="t">' + esc(ago(x.t)) + '</span><span class="tag">' +
+      (x.kind === "halt" ? "叫停" : "刹车") + "</span><span>" +
+      esc((x.where || "") + " " + (x.who || "")) + "：发了 " + esc(x.sent) + " 段，" + esc(x.why) + '</span><span class="t">没发：' +
+      (x.kind === "halt" ? esc(x.n || 1) + " 段，从「" + esc(x.left) + "」起" : esc(x.left)) + "</span></div>").join("") ||
+      '<div class="empty">今天没刹过车、没被叫停过。</div>';
     const m = a.migrated;
     $("o-mig").textContent = !m ? "没有迁移记录（新装，或旁边没有旧的攒一攒 / 群聊节奏 / 省 token 存档）。" :
       "首次加载时迁移过一次：" + ((m.from || []).length ? "接上了 " + m.from.map((n) => NAMES[n] || n).join("、") + " 的旧存档（旧目录原样没动）" : "旁边没有旧存档") +

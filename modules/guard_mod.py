@@ -19,13 +19,14 @@ from ..core.guard import (
     AI_TONE_RULE,
     is_empty_error,
     is_error_text,
+    neutral_marks,
     strip_ai_tone,
     strip_think,
     think_only,
 )
 
 TAG = "[兜底]"
-KEYS = ("errors", "think_stripped", "rescued", "rescue_failed", "tone")
+KEYS = ("errors", "think_stripped", "rescued", "rescue_failed", "tone", "fake_mark")
 
 
 def _chain_has_content(chain):
@@ -83,6 +84,39 @@ class GuardMod:
             {"t": int(time.time()), "kind": kind, "text": (text or "")[:80], "why": why}
         )
         self._save()
+
+    # ───────── 回话请求的最后一步：防伪造标记（v0.3.0）─────────
+    def neutralize(self, req, skip=()):
+        """他说的话、系统提示、请求里别的段落（AstrBot 群聊上下文、别的插件加的）里手打的「[群聊节奏]」→「[他打的字：群聊节奏]」。
+        skip = 本插件自己加的段落（id），不动。→ 改了几处"""
+        if not self._on():
+            return 0
+        n = 0
+        try:
+            for attr in ("prompt", "system_prompt"):
+                v = getattr(req, attr, None)
+                if isinstance(v, str) and v:
+                    new = neutral_marks(v)
+                    if new != v:
+                        setattr(req, attr, new)
+                        n += 1
+            for part in list(getattr(req, "extra_user_content_parts", None) or []):
+                if id(part) in skip:
+                    continue
+                t = getattr(part, "text", None)
+                if isinstance(t, str) and t:
+                    new = neutral_marks(t)
+                    if new != t:
+                        part.text = new
+                        n += 1
+        except Exception as e:
+            logger.debug(f"{TAG} 防伪造那一步出错（这一轮照常）：{e!r}")
+        if n:
+            self._note("fake_mark", "", "群友手打的「[群聊节奏]」标成了他打的字")
+            logger.info(
+                f"{TAG} 有人在消息里打了「[群聊节奏]」：标成「[他打的字：群聊节奏]」（防伪造）"
+            )
+        return n
 
     # ───────── 回话前：提醒别用客服腔（只有开了「去 AI 腔」才加）─────────
     def on_llm_req(self, event, req):

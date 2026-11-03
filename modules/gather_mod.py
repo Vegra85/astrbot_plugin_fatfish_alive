@@ -13,15 +13,25 @@
 
 活人感新增：「稍等 / 还没说完 / 等我发完」先不回（core/gather.py 的 hold_phrases）。
 v0.2.0：并完以后在 event 上记下「找她的那一条」（fatfish_ask），群里引用的时候引用它、不引用最后补的一句。
+v0.3.0（借作者自己的 QQ 机器人 v1.16.3）：规则等完以后再看一眼 ——
+  私聊里他还在「正在输入」（NapCat 的通知）→ 再等等（最多 typing_extra_sec 秒）；
+  最后一句尾巴含糊（那个 / 然后 / 逗号 / 省略号 / 列举到一半）→ 问一次判断模型「他说完了吗」（不带人设、最多等 4 秒、一轮最多问 2 次）
+  → 回「等 N」就再等 N 秒（3~12）；关了 tail_ask 就固定多等 tail_extra_sec 秒。
+v0.4.0（借作者自己的 QQ 机器人 11-03 v1.17.13）：还排着没回、他把那条撤回了 → 那条不回（recall_drop，默认开）：
+  只有那一条 → 这一轮不回（静悄悄停掉）；在等的那条撤回了、他前面还有几条 → 只回剩下的；
+  撤回通知比消息先到（图还在下载这种）→ 记 10 分钟，这条一到就认出来、不回。
 """
 
+import asyncio
 import copy
+import re
 import time
 from collections import deque
 
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
 
+from ..core.conf import truthy
 from ..core.gather import DEFAULTS, Gatherer, merge_lines
 
 try:
@@ -50,7 +60,22 @@ CORE_KEYS = (
     "max_msgs",
     "hold_phrases",
     "hold_sec",
+    "tail_vague",
+    "tail_ask",
+    "tail_extra_sec",
+    "tail_ask_max",
+    "typing_wait",
+    "typing_extra_sec",
+    "recall_drop",
 )
+RECALL = ("group_recall", "friend_recall")
+RECALL_KEEP = 600.0  # （v0.4.0）撤回通知比消息先到：记多少秒
+TAIL_SYS = (
+    "你在帮一个 QQ 聊天机器人判断：对方是不是已经把这一串话说完了。下面是前面几行聊天、和他刚连着发的几条。"
+    "只回一个：说完了（或者在等回应）就回「回」；明显一句话没说完、后面还要接着发 就回「等 N」（N = 还要等几秒 3 到 12）。不要解释。"
+)
+TAIL_TIMEOUT = 4.0  # 问「他说完了吗」最多等几秒（超时 / 出错 = 说完了）
+TYPING_RECENT = 6.0  # 「正在输入」的通知多少秒内算还在输入
 
 
 def _num(v, d):
@@ -71,7 +96,11 @@ class GatherMod:
         self.recent = deque(st.get("recent") or [], maxlen=40)
         self.g = Gatherer(self._core_cfg())
         self.g.probe = self._probe
+        self.g.typing = self._typing
+        self.g.asker = self._ask_tail
         self.by_ev = {}  # id(事件) -> Msg
+        self.typing_at = {}  # （v0.3.0）攒一攒的 key（会话|QQ）-> 最近一次「正在输入」通知的时间
+        self.recalled = {}  # （v0.4.0）撤回了的消息 id -> 什么时候撤回的（撤回通知比消息先到时，消息一到就认出来）
         self._warned = {}
         host.store.register("gather", self.dump)
 
@@ -119,6 +148,11 @@ class GatherMod:
             "msgs",
             "saved",
             "turns",
+            "tail_asks",
+            "tail_waits",
+            "typing_waits",
+            "recalled",
+            "recall_skip",
         ):  # 存档缺了哪项（手改过 / 坏了）也不会 KeyError
             if not isinstance(self.stats.get(k), int):
                 self.stats[k] = 0
@@ -176,6 +210,154 @@ class GatherMod:
     def _msg(self, event):
         m = self.by_ev.get(id(event))
         return m if m is not None and m.ev is event else None
+
+    # ───────── 「正在输入」（v0.3.0）─────────
+    def on_notice(self, event, raw):
+        """QQ 的通知：私聊里「对方正在输入」→ 记下时间（攒一攒等完以后他还在输入就再等等）；停了 → 清掉。
+        （v0.4.0）撤回 → 还排着没回的那条不回了"""
+        try:
+            if not self._on():
+                return
+            if raw.get("notice_type") in RECALL:
+                self._recall(event, raw)
+                return
+            if (
+                raw.get("notice_type") != "notify"
+                or raw.get("sub_type") != "input_status"
+            ):
+                return
+            if raw.get("group_id") not in (None, 0, "0", ""):
+                return
+            key = self._key(event)
+            st = str(raw.get("status_text") or "")
+            if str(raw.get("event_type")) == "1" or "输入" in st:
+                self.typing_at[key] = time.time()
+                if len(self.typing_at) > 500:
+                    now = time.time()
+                    self.typing_at = {
+                        k: t for k, t in self.typing_at.items() if now - t < 60
+                    }
+            else:
+                self.typing_at.pop(key, None)
+        except Exception as e:
+            self._oops("记「正在输入」的时候", e)
+
+    def _typing(self, m):
+        t = self.typing_at.get(m.key)
+        return bool(t) and time.time() - t <= TYPING_RECENT
+
+    # ───────── 撤回（v0.4.0）─────────
+    def _recall(self, event, raw):
+        """他撤回了一条：还排着没回的 → 不算进来；还没到的（撤回通知先到）→ 记着，到了再认"""
+        if not truthy(self.config.get("recall_drop"), True):
+            return
+        mid = raw.get("message_id")
+        if mid in (None, ""):
+            return
+        now = time.time()
+        if len(self.recalled) > 300:
+            self.recalled = {
+                k: t for k, t in self.recalled.items() if now - t < RECALL_KEEP
+            }
+        self.recalled[str(mid)] = now
+        self.g.set_cfg(self._core_cfg())
+        x = self.g.recall(self._key(event), str(mid))
+        if x is not None:
+            self._today()["recalled"] += 1
+            self._save()
+            logger.info(
+                f"{TAG} {x.where} {x.who} 把还排着没回的一条撤回了（「{x.line[:20]}」）→ 不回这条"
+            )
+
+    def _recalled_early(self, m):
+        """这条到了：撤回通知已经先到了 → 记成撤回了（不并、不回）"""
+        mid = str((m.data or {}).get("mid") or "")
+        t = self.recalled.get(mid) if mid else None
+        if t is None or time.time() - t > RECALL_KEEP:
+            return
+        if self.g.recall_msg(m):
+            self._today()["recalled"] += 1
+            logger.info(
+                f"{TAG} {m.where} {m.who} 撤回了一条（撤回通知比消息先到）→ 不回这条"
+            )
+
+    # ───────── 尾巴含糊：问一次「他说完了吗」（v0.3.0）─────────
+    def _before_lines(self, m):
+        """他这一串之前群里的几句（私聊 / 拿不到 → []）"""
+        ev = m.ev
+        try:
+            gid = str(ev.get_group_id() or "")
+            if not gid:
+                return []
+            hist = list(
+                self.host.shared.recent.get(f"{ev.get_platform_id()}:{gid}", ())
+            )
+        except Exception:
+            return []
+        rows = [h for h in hist if float(h.get("ts") or 0) < m.start and h.get("text")]
+        return [
+            f"{'机器人' if h.get('role') == 'assistant' else (h.get('name') or '某人')}: "
+            + re.sub(r"\s+", " ", str(h.get("text")))[:80]
+            for h in rows[-3:]
+        ]
+
+    async def _ask_tail(self, m, mem):
+        """尾巴含糊 → 问判断模型（只给这一串话 + 前 3 行聊天，不带人设）→ 还要等几秒（0 = 说完了）"""
+        ev = m.ev
+        st = self._today()
+        st["tail_asks"] += 1
+        who = m.who or "他"
+        last = mem[-1].line if mem else m.line
+        said = [" ".join(str(x.line or "").split())[:120] for x in (mem or [m])[-4:]]
+        rq = (
+            "【前面的聊天】\n"
+            + ("\n".join(self._before_lines(m)) or "（没有）")
+            + f"\n【{who} 刚连着发的】\n"
+            + "\n".join(f"{who}: {x}" for x in said)
+        )
+        try:
+            pid = (
+                str(self.config.get("tail_provider_id") or "").strip()
+                or str(self.host.sub("rhythm").get("judge_provider_id") or "").strip()
+            )
+            if not pid:
+                pid = await self.host.context.get_current_chat_provider_id(
+                    ev.unified_msg_origin
+                )
+            resp = await asyncio.wait_for(
+                self.host.context.llm_generate(
+                    chat_provider_id=pid, prompt=rq, system_prompt=TAIL_SYS
+                ),
+                TAIL_TIMEOUT,
+            )
+        except Exception as e:
+            logger.info(
+                f"{TAG} {m.where} {who} 尾巴含糊，问了一下没问成（{type(e).__name__}）→ 当成说完了"
+            )
+            return 0
+        b = self.host.budget
+        if b is not None and self.host.active("budget"):
+            try:
+                b.record_usage(resp)
+            except Exception:
+                pass
+        out = re.sub(
+            r"<(think|thinking)>.*?</\1>",
+            "",
+            getattr(resp, "completion_text", "") or "",
+            flags=re.S | re.I,
+        )
+        hit = re.search(r"等\s*(\d{1,2})", out)
+        if hit:
+            n = max(3, min(12, int(hit.group(1))))
+            logger.info(
+                f"{TAG} {m.where} {who} 尾巴含糊（「{last[-12:]}」），问了一下 → 再等 {n} 秒"
+            )
+            return n
+        logger.info(
+            f"{TAG} {m.where} {who} 尾巴含糊（「{last[-12:]}」），问了一下 → 说完了"
+        )
+        return 0
 
     # ───────── 记下内容 ─────────
     @staticmethod
@@ -263,6 +445,8 @@ class GatherMod:
         )
         if self._is_cmd(event):
             self.g.mark(m, "skip")
+        if self.recalled:
+            self._recalled_early(m)  # （v0.4.0）
 
     def on_message(self, event):
         """每条消息都记下内容（不拦）"""
@@ -389,6 +573,12 @@ class GatherMod:
         self.host.ensure_loops()
         verdict, mem = await self.g.hold(m)
         st = self._today()
+        if verdict == "recalled":  # （v0.4.0）排着的只有他撤回的那条：这一轮不回
+            event.stop_event()
+            st["recall_skip"] += 1
+            self._save()
+            logger.info(f"{TAG} {m.where} {m.who} 把还排着的那条撤回了 → 这一轮不回")
+            return True
         if verdict != "go":
             event.stop_event()  # 静悄悄地停掉：不叫模型、什么都不发
             st["saved"] += 1
@@ -398,9 +588,31 @@ class GatherMod:
             )
             return True
         st["turns"] += 1
+        more = getattr(m, "more", None) or {}
+        if more.get("typed"):
+            st["typing_waits"] += 1
+            logger.info(
+                f"{TAG} {m.where} {m.who} 还在输入 → 多等了 {more['typed']:.0f} 秒"
+            )
+        if more.get("tail_waits"):
+            st["tail_waits"] += int(more["tail_waits"])
         event.set_extra("fatfish_ask", self._ask(mem))
-        if len(mem) > 1:
+        if (
+            m not in mem
+        ):  # （v0.4.0）在等的这条他撤回了：这一轮只回剩下的（发消息模块按这几条看「撤回了她在回的那句」）
+            mids = [
+                str((x.data or {}).get("mid") or "")
+                for x in mem
+                if x.state == "carrier"
+            ] or [str((mem[-1].data or {}).get("mid") or "")]
+            event.set_extra("fatfish_mids", [x for x in mids if x])
             self._merge(event, m, mem, pwp)
+            logger.info(
+                f"{TAG} {m.where} {m.who} 把最后那条撤回了 → 只回前面的 {len(mem)} 条"
+            )
+        if len(mem) > 1:
+            if m in mem:
+                self._merge(event, m, mem, pwp)
             waited = round(max(0.0, time.time() - m.first), 1)
             pics = sum(len((x.data or {}).get("imgs") or []) for x in mem)
             st["merges"] += 1
@@ -492,7 +704,13 @@ class GatherMod:
         pr = event.get_extra("provider_request")
         if pr is not None:
             try:
-                if (pr.prompt or "").strip() == own.strip():
+                if (
+                    m not in mem
+                ):  # （v0.4.0）这条他撤回了：请求里的话整个换成剩下的，这条的图也拿掉
+                    pr.prompt = text
+                    gone = set((m.data or {}).get("imgs") or [])
+                    pr.image_urls[:] = [u for u in pr.image_urls or [] if u not in gone]
+                elif (pr.prompt or "").strip() == own.strip():
                     pr.prompt = text
                 else:
                     others = merge_lines(
