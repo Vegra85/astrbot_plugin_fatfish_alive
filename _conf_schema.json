@@ -594,14 +594,14 @@
     }
   },
   "guard": {
-    "description": "兜底（报错拦截 / 空回复救援 / 去 AI 腔）",
+    "description": "兜底（报错拦截 / 空回复救援 / 草稿外泄 / 去 AI 腔）",
     "type": "object",
     "items": {
       "enable": {
         "description": "开启兜底",
         "type": "bool",
         "default": true,
-        "hint": "关掉以后下面三项都不做"
+        "hint": "关掉以后下面几项都不做"
       },
       "block_errors": {
         "description": "框架报错不发出去",
@@ -620,6 +620,12 @@
         "type": "float",
         "default": 25.0,
         "hint": "补调的那一次模型调用的超时"
+      },
+      "strip_draft": {
+        "description": "草稿外泄：回复开头的英文草稿去掉",
+        "type": "bool",
+        "default": true,
+        "hint": "v0.4.1：模型不开思考时，偶尔把「想一下再答」的英文草稿写进回复开头（「Question: … Answer: … Short.」，下面才是真正的回话）。开着：发出去之前去掉开头的草稿行（只有标点的行、英文标签开头而且英文为主的行）；整条都是草稿 → 跟空回一样补调一次（「空回复救援」开着时），还是没有就不发。后面剩下纯英文（对方在用英文聊）、写代码的不动；只管开头"
       },
       "strip_ai_tone": {
         "description": "去 AI 腔（默认关）",

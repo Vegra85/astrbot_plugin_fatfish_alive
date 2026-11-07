@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""兜底（新）：借 mindscape 的思路。三件事，各一个开关：
+"""兜底（新）：借 mindscape 的思路。四件事，各一个开关：
   1. 报错拦截：AstrBot 调模型出错时会把「Error occurred during AI execution…」这类报错原样发到聊天里 → 拦下不发（默认开）
   2. 空回复救援：模型只回了 <think> 思考、没有正文 → 补调一次模型要一句正文；还是空就不发（默认开）
-  3. 去 AI 腔：「作为一个AI」「希望对你有帮助」这类客服腔，提醒模型别用、发出去前再去掉（默认关：语气交给人设自己管）
-报错拦截 / 去 AI 腔 在发送前拦（on_decorating_result）；空回复救援 两处：发送前（只有 <think> 的那种）、模型回完（什么都没回的那种）
+  3. 草稿外泄（v0.4.1）：回复开头漏出来模型的英文草稿（「Question: … Answer: … Short.」）→ 去掉；整条都是草稿 → 跟空回一样补调一次，还是没有就不发（默认开）
+  4. 去 AI 腔：「作为一个AI」「希望对你有帮助」这类客服腔，提醒模型别用、发出去前再去掉（默认关：语气交给人设自己管）
+报错拦截 / 草稿外泄 / 去 AI 腔 在发送前拦（on_decorating_result）；空回复救援 两处：发送前（只有 <think> 的那种）、模型回完（什么都没回的那种）
 """
 
 import asyncio
@@ -21,12 +22,13 @@ from ..core.guard import (
     is_error_text,
     neutral_marks,
     strip_ai_tone,
+    strip_draft,
     strip_think,
     think_only,
 )
 
 TAG = "[兜底]"
-KEYS = ("errors", "think_stripped", "rescued", "rescue_failed", "tone", "fake_mark")
+KEYS = ("errors", "think_stripped", "rescued", "rescue_failed", "tone", "fake_mark", "draft")
 
 
 def _chain_has_content(chain):
@@ -184,6 +186,8 @@ class GuardMod:
                         strip_think(c.text) if "<think" in c.text.lower() else c.text
                     )
                 self._note("think_stripped", text, "<think> 漏出来了：去掉")
+        if self._on("strip_draft") and plain and await self._draft(event, res, plain, others):
+            return True
         if self._on("strip_ai_tone", False) and plain:
             gone_all = []
             for c in plain:
@@ -194,6 +198,82 @@ class GuardMod:
             if gone_all:
                 self._note("tone", "、".join(gone_all), "去掉客服腔")
                 logger.info(f"{TAG} 去 AI 腔：去掉了 {'、'.join(gone_all)[:60]!r}")
+        return False
+
+    async def _draft(self, event, res, plain, others):
+        """回复开头漏出来模型的英文草稿（v0.4.1）：去掉草稿行；整条都是草稿 → 跟空回一样补调一次，还是没有就不发
+        → True = 这条被拦下了（不发）"""
+        first = next((c for c in plain if (c.text or "").strip()), None)
+        if first is None:
+            return False
+        new, gone = strip_draft(first.text)
+        if not gone:
+            return False
+        first.text = new
+        drop = " / ".join(gone)[:120]
+        if "".join(c.text or "" for c in plain).strip() or others:
+            self._fix_history(event)
+            self._note("draft", drop, "回复开头是模型的草稿：去掉")
+            logger.info(f"{TAG} 草稿外泄：回复开头是模型的草稿 → 去掉：{drop!r}")
+            return False
+        again = await self._rescue(event) if self._on("rescue_empty") else ""
+        again = strip_draft(again)[0] if again else ""
+        if again:
+            res.chain = [Comp.Plain(text=again)]
+            self._fix_history(event, again)
+            self._note("draft", drop, "整条都是模型的草稿：去掉")
+            self._note("rescued", again, "整条都是草稿：补调了一次")
+            logger.info(
+                f"{TAG} 草稿外泄：整条都是模型的草稿（{drop!r}）→ 补调了一次 → {again[:30]!r}"
+            )
+            return False
+        self._fix_history(event, drop_turn=True)
+        event.set_result(MessageEventResult())
+        event.stop_event()
+        self._note("draft", drop, "整条都是模型的草稿：不发")
+        logger.warning(f"{TAG} 草稿外泄：整条都是模型的草稿（{drop!r}），补调也没要到正文：这条不发")
+        return True
+
+    def _fix_history(self, event, text=None, drop_turn=False):
+        """AstrBot 这一轮还没存进对话记录（存的是模型回的整段）：记录里的那条回话也去掉开头的草稿；
+        text：整条都是草稿、补调到了 → 记录里换成补的那句；drop_turn：整条都是草稿、没发 → 这一轮（他那句 + 回话）都不存
+        （AstrBot 遇到空回也是两句都不存）。用的是 AstrBot 内部正在跑的那一轮（跟发消息的「叫停」一样）；对不上就不改 → 改了没有"""
+        try:
+            from astrbot.core.pipeline.process_stage.follow_up import (
+                _ACTIVE_AGENT_RUNNERS,
+            )
+
+            r = _ACTIVE_AGENT_RUNNERS.get(event.unified_msg_origin)
+            ctx = getattr(getattr(r, "run_context", None), "context", None)
+            if r is None or getattr(ctx, "event", None) is not event:
+                return False
+            msgs = r.run_context.messages
+            last = msgs[-1]
+            if getattr(last, "role", "") != "assistant":
+                return False
+            if drop_turn:
+                prev = msgs[-2] if len(msgs) >= 2 else None
+                if getattr(prev, "role", "") != "user":
+                    return False
+                last._no_save = True
+                prev._no_save = True
+                return True
+            if isinstance(last.content, str):
+                new = text if text is not None else strip_draft(last.content)[0]
+                if new != last.content:
+                    last.content = new
+                    return True
+                return False
+            for p in last.content or []:
+                t = getattr(p, "text", None)
+                if getattr(p, "type", "") == "text" and t and t.strip():
+                    new = text if text is not None else strip_draft(t)[0]
+                    if new != t:
+                        p.text = new
+                        return True
+                    return False
+        except Exception as e:  # noqa: BLE001  这一层出错不能连累发消息
+            logger.debug(f"{TAG} 改对话记录（去草稿）出错：{e!r}")
         return False
 
     # ───────── 模型回完：什么都没回的救援 ─────────
@@ -291,6 +371,7 @@ class GuardMod:
                 "enable": truthy(c.get("enable"), True),
                 "block_errors": truthy(c.get("block_errors"), True),
                 "rescue_empty": truthy(c.get("rescue_empty"), True),
+                "strip_draft": truthy(c.get("strip_draft"), True),
                 "strip_ai_tone": truthy(c.get("strip_ai_tone"), False),
             },
         }

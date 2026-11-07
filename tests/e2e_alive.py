@@ -5,7 +5,8 @@
 真的 AstrBot（4.29.3）+ 这个插件 + 假 QQ 端（假 NapCat 反向 WebSocket）+ 假模型（OpenAI 兼容，按关键字回：EMPTY 空回 / THINKONLY 只有思考 / LEAK 漏思考 / BOOM 接口报错 / TONE 客服腔）
   1 第一次装上：旁边有旧三个插件的存档和配置 → 自动接上（面板、配置都看得到），旧目录原样不动
   2 三个模块一起干活：接话 + 攒一攒（@ 后马上补一句并成一次）+ 「稍等」多等 + 收尾句不接 + 省 token 对账 + /活人感 指令
-  3 兜底：空回补救、只有 <think> 补救、漏 <think> 去掉、接口报错不外发、客服腔（默认关，打开以后去掉）、兜底关掉就不管
+  3 兜底：空回补救、只有 <think> 补救、漏 <think> 去掉、开头漏了英文草稿去掉 / 整条都是草稿补调一次（v0.4.1）、接口报错不外发、
+    客服腔（默认关，打开以后去掉）、兜底关掉就不管
   4 每个模块单独关，别的照常；总开关关掉全不管
   5 装了同类插件（假的 group_chat_plus）：重启后攒一攒、群聊节奏自动让路（面板 + 日志写明），省 token、兜底照常；强制开 / 关自动让路
   5c（v0.3.0）再装假的 angel_heart / reply_merge / qq_enhance：angel_heart 让攒一攒 + 群聊节奏 + 省 token 的拦截（照样记账），
@@ -23,6 +24,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -56,6 +58,9 @@ SIBLINGS = [
 SELF, A, B, C, AI, ADMIN = 99999, 30001, 30002, 30003, 50005, 30009
 G1, G2, G3, G4 = 7001, 7002, 7003, 7004
 RES = []
+VER = re.search(
+    r'^VERSION = "([^"]+)"', (PLUGIN_SRC / "main.py").read_text(encoding="utf-8"), re.M
+).group(1)  # 版本号从 main.py 读（升版本不用改这个测试）
 BIN = Path(sys.executable).parent
 ASTRBOT = str(BIN / "astrbot") if (BIN / "astrbot").exists() else "astrbot"
 
@@ -158,6 +163,10 @@ async def chat_completions(request):
             text = "<think>我在想</think>"
         elif "LEAK" in first:
             text = "<think>偷偷想</think>漏了但有正文"
+        elif "DRAFTALL" in first:  # v0.4.1：整条都是英文草稿
+            text = "Question: what is he asking about here. Answer: just say hi back. Short."
+        elif "DRAFT" in first:  # v0.4.1：开头漏了英文草稿
+            text = ":\nQuestion: what is he asking about here. Answer: just say hi back. Short.\n\n你好呀 这是正文"
         elif "TONE" in first:
             text = "好的，我来说。希望这些对你有帮助！"
         elif "SEGS" in first:
@@ -801,7 +810,7 @@ async def main():
         text = log_text()
         print(f"[0 装上（一起装的：{'、'.join(SIBLINGS) or '没有（--alone）'}）]")
         check(
-            "[活人感] v0.4.0 已启用" in text and "Traceback" not in text,
+            f"[活人感] v{VER} 已启用" in text and "Traceback" not in text,
             "AstrBot 起来了、活人感加载了、没有报错",
             text[-1500:],
         )
@@ -1036,6 +1045,26 @@ async def main():
             "正文前面漏了 <think>：去掉、只发正文",
             said,
         )
+        said, chats, ks = await turn(qq, G4, A, "DRAFT 在吗", at_bot=True)
+        check(
+            len(said) == 1 and said[0].strip() == "你好呀 这是正文" and "Question" not in said[0],
+            "回复开头漏了模型的英文草稿（v0.4.1）：去掉、只发正文",
+            said,
+        )
+        nr = len(rescue_calls)
+        said, chats, ks = await turn(qq, G4, A, "DRAFTALL 在吗", at_bot=True)
+        check(
+            len(said) == 1 and "补救：" in said[0] and "Question" not in said[0] and len(rescue_calls) == nr + 1,
+            "整条都是草稿（v0.4.1）：跟空回一样补调一次、发补的那句",
+            (said, len(rescue_calls) - nr),
+        )
+        said, chats, ks = await turn(qq, G4, A, "那现在呢", at_bot=True)
+        hist = json.dumps(chats[0]["messages"] if chats else [], ensure_ascii=False)
+        check(
+            chats and "你好呀 这是正文" in hist and "what is he asking" not in hist,
+            "对话记录里也没有草稿（下一轮的请求里有正文、没有那几行英文）",
+            hist[-600:],
+        )
         said, chats, ks = await turn(
             qq, G4, A, "BOOM 在吗", at_bot=True, expect=False, quiet=6.0
         )
@@ -1076,9 +1105,10 @@ async def main():
         code, st = await api_get(s, hdr)
         g = st["guard"]["today"]
         check(
-            g.get("rescued", 0) >= 2
+            g.get("rescued", 0) >= 3
             and g.get("tone", 0) >= 1
-            and g.get("errors", 0) >= 1,
+            and g.get("errors", 0) >= 1
+            and g.get("draft", 0) >= 2,
             f"面板：兜底今天 {g}",
             g,
         )

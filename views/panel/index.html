@@ -186,6 +186,7 @@
   <div class="card"><b id="o-g-rescued">-</b><span>空回 / 只有思考 → 补救成功</span></div>
   <div class="card"><b id="o-g-failed">-</b><span>补救没成</span></div>
   <div class="card"><b id="o-g-tone">-</b><span>去掉客服腔</span></div>
+  <div class="card"><b id="o-g-draft">-</b><span>去掉开头的草稿</span></div>
 </div>
 <p class="note" id="o-g-cfg"></p>
 <div class="list" id="o-g-recent" style="margin-top:8px"></div>
@@ -786,10 +787,11 @@ window.__alive.mods.b = {render: render, setApi: function (a) { api = a; }, redr
     document.getElementById("o-g-rescued").textContent = dt.rescued || 0;
     document.getElementById("o-g-failed").textContent = dt.rescue_failed || 0;
     document.getElementById("o-g-tone").textContent = dt.tone || 0;
+    document.getElementById("o-g-draft").textContent = dt.draft || 0;
     const c = gd.config || {};
-    $("o-g-cfg").textContent = "拦报错：" + (c.block_errors === false ? "关" : "开") + " · 空回补救：" + (c.rescue_empty === false ? "关" : "开") +
+    $("o-g-cfg").textContent = "拦报错：" + (c.block_errors === false ? "关" : "开") + " · 空回补救：" + (c.rescue_empty === false ? "关" : "开") + " · 去草稿：" + (c.strip_draft === false ? "关" : "开") +
       " · 去 AI 腔：" + (c.strip_ai_tone ? "开" : "关（默认）");
-    const KIND = { errors: "拦下报错", think_stripped: "去 <think>", rescued: "补救成功", rescue_failed: "补救没成", tone: "去客服腔" };
+    const KIND = { errors: "拦下报错", think_stripped: "去 <think>", rescued: "补救成功", rescue_failed: "补救没成", tone: "去客服腔", draft: "去草稿" };
     $("o-g-recent").innerHTML = (gd.recent || []).map((x) => '<div class="item"><span class="t">' + esc(ago(x.t)) + '</span><span class="tag">' +
       esc(KIND[x.kind] || x.kind) + "</span><span>" + esc(x.text) + '</span><span class="t">' + esc(x.why) + "</span></div>").join("") ||
       '<div class="empty">今天没触发过。</div>';

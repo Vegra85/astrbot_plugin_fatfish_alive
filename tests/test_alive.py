@@ -58,6 +58,10 @@ miss = [
 check(not miss, "每一项都有中文说明和提示", miss[:5])
 check(all(v.get("type") == "object" for v in SCHEMA.values()), "分组都是 object")
 check(SCHEMA["guard"]["items"]["strip_ai_tone"]["default"] is False, "去 AI 腔默认关")
+check(
+    (SCHEMA["guard"]["items"].get("strip_draft") or {}).get("default") is True,
+    "草稿外泄（v0.4.1）默认开",
+)
 check(SCHEMA["compat"]["items"]["auto_yield"]["default"] is True, "自动让路默认开")
 gi = SCHEMA["gather"]["items"]
 check(
@@ -92,8 +96,8 @@ meta = (d / "metadata.yaml").read_text(encoding="utf-8")
 check(
     "astrbot_plugin_fatfish_alive" in meta
     and "license: MIT" in meta
-    and "version: v0.4.0" in meta,
-    "metadata.yaml：名字 / 许可证 / 版本（v0.4.0）",
+    and "version: v0.4.1" in meta,
+    "metadata.yaml：名字 / 许可证 / 版本（v0.4.1）",
 )
 
 # ═══════════════ 2 分组配置的读法 ═══════════════
@@ -458,6 +462,28 @@ check(
     "别用" in guard.AI_TONE_RULE and guard.AI_TONE_RULE.startswith("（"),
     "提醒别用客服腔的那句话在",
 )
+
+# ───── 草稿外泄（v0.4.1）─────
+sd = getattr(guard, "strip_draft", None)
+D1 = ":\nQuestion: what is he asking about here. Answer: just say hi back. Short.\n\n你好呀 这是正文"
+check(
+    sd is not None and sd(D1) == ("你好呀 这是正文", [":", "Question: what is he asking about here. Answer: just say hi back. Short."]),
+    "开头的标点行 + 英文草稿行 → 去掉，只剩正文（回退检查：v0.4.0 原样发出去）",
+    sd and sd(D1),
+)
+D2 = "Plan: reply briefly and warmly to the user\nThinking: keep it short and simple\n好的 我来啦"
+check(sd is not None and sd(D2)[0] == "好的 我来啦" and len(sd(D2)[1]) == 2, "连着几行英文标签草稿都去掉", sd and sd(D2))
+D3 = "Question: what is he asking about here. Answer: just say hi back. Short."
+check(sd is not None and sd(D3)[0] == "" and sd(D3)[1], "整条都是草稿 → 去完什么都不剩（外壳补调一次 / 不发）", sd and sd(D3))
+for t, why in (
+    ("Question: how are you doing today friend?\n\nI am fine thanks", "剩下纯英文（对方在用英文聊）"),
+    ("Note：这首歌叫 Yellow", "英文标签但不到 4 个英文词 / 汉字不少"),
+    ("：\n就回了个冒号", "只有标点行、没有英文标签行"),
+    ("```\nprint(1)\n```", "写代码"),
+    ("普通的一句话", "普通的话"),
+    ("你好\nQuestion: what is this about anyway. Answer: nothing.", "草稿不在开头（只管开头）"),
+):
+    check(sd is not None and sd(t) == (t, []), f"不动：{why}", sd and sd(t))
 
 # ═══════════════ 7 攒一攒：「稍等」多等一阵 ═══════════════
 print("\n[6b 防伪造：群友手打的「[群聊节奏]」（v0.3.0）]")
@@ -999,7 +1025,7 @@ check(
 )
 html = (d / "views" / "panel" / "index.html").read_text(encoding="utf-8")
 check(
-    all(x in html for x in ("总览", "攒一攒", "群聊节奏", "省 token", "兜底", "让路")),
+    all(x in html for x in ("总览", "攒一攒", "群聊节奏", "省 token", "兜底", "让路", "o-g-draft")),
     "面板：总览 + 三个标签 + 兜底 + 让路情况",
 )
 check(
@@ -1009,10 +1035,11 @@ check(
 main_src = (d / "main.py").read_text(encoding="utf-8")
 CHG = (d / "CHANGELOG.md").read_text(encoding="utf-8").split("\n## ")
 check(
-    'VERSION = "0.4.0"' in main_src
-    and CHG[1].startswith("v0.4.0（2026-11-03）")
-    and CHG[2].startswith("v0.3.0（2026-11-02）"),
-    "版本号 0.4.0：main.py / CHANGELOG 顶上一节（v0.3.0 那节还在，两节一起推）",
+    'VERSION = "0.4.1"' in main_src
+    and CHG[1].startswith("v0.4.1（2026-11-08）")
+    and CHG[2].startswith("v0.4.0（2026-11-03）")
+    and CHG[3].startswith("v0.3.0（2026-11-02）"),
+    "版本号 0.4.1：main.py / CHANGELOG 顶上一节（v0.4.0、v0.3.0 那两节还在）",
 )
 check(
     'self.yield_reason("budget")' in main_src

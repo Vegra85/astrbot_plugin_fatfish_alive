@@ -541,7 +541,7 @@ check(
         rc.is_welcome(t)
         for t in (
             "欢迎新人！",
-            "欢迎加入本群！Ciallo～",
+            "欢迎加入本群！冒个泡～",
             "欢迎欢迎",
             "欢迎~",
             "欢迎你呀",
@@ -549,7 +549,7 @@ check(
         )
     ),
     "认得出欢迎：欢迎新人 / 欢迎加入本群 / 欢迎欢迎 / 欢迎你",
-    [t for t in ("欢迎新人！", "欢迎加入本群！Ciallo～") if not rc.is_welcome(t)],
+    [t for t in ("欢迎新人！", "欢迎加入本群！冒个泡～") if not rc.is_welcome(t)],
 )
 check(
     not any(

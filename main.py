@@ -4,6 +4,7 @@
 v0.3.0：攒一攒「尾巴含糊才问」、私聊「他还在输入」多等一会儿；群聊节奏的标记防伪造；让路名单加 angel_heart / reply_merge / qq_enhance。
 v0.4.0：撤回 / 算了（攒一攒里还排着的他撤回了 → 不回；分段发的时候他撤回了 / 说「算了」→ 剩下的不发）；
         接话打分（借 Inner Thoughts：没点名它的群消息按 8 条打分 + 一句理由；默认影子，只记不改）。
+v0.4.1：草稿外泄（兜底：回复开头漏出来模型的英文草稿去掉；整条都是草稿 → 补调一次 / 不发）。
 
 原来是三个插件（攒一攒 gather / 群聊节奏 rhythm / 省 token budget），共用一套钩子顺序，靠优先级互相猜。
 现在放进一个插件，顺序在这里排死：
@@ -49,7 +50,7 @@ from .modules.rhythm_mod import RhythmMod
 from .modules.send_mod import SendMod, notice_of
 
 PLUGIN_NAME = "astrbot_plugin_fatfish_alive"
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 TAG = "[活人感]"
 WAIT_PRIORITY = 1000000  # on_waiting_llm_request：比「认 AI」(sys.maxsize) 后、比别的插件默认的 0 先
 LATE_PRIORITY = -sys.maxsize + 100  # on_llm_request 的最后一步：防伪造（v0.3.0）

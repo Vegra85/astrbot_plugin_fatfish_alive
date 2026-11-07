@@ -14,6 +14,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -442,7 +443,12 @@ async def main():
         s = aiohttp.ClientSession()
         text = log_text()
         print("\n[0 都加载了]")
-        check("[活人感] v0.4.0 已启用" in text, "活人感 v0.4.0 加载了", text[-1500:])
+        ver = re.search(
+            r'^VERSION = "([^"]+)"',
+            (PLUGIN_SRC / "main.py").read_text(encoding="utf-8"),
+            re.M,
+        ).group(1)
+        check(f"[活人感] v{ver} 已启用" in text, f"活人感 v{ver} 加载了", text[-1500:])
         async with s.get(
             f"http://127.0.0.1:{DASH_PORT}/api/plugin/get", headers=hdr
         ) as r:

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""兜底的判断（不依赖 AstrBot）：框架报错特征、只有 <think> 没正文、去 AI 腔。借 mindscape 的思路。"""
+"""兜底的判断（不依赖 AstrBot）：框架报错特征、只有 <think> 没正文、回复开头漏出来的草稿（v0.4.1）、去 AI 腔。借 mindscape 的思路。"""
 
 import re
 
@@ -58,6 +58,55 @@ def neutral_marks(text):
     if not s or not FAKE_MARK.search(s):
         return text
     return FAKE_MARK.sub(MARK_SAFE, s)
+
+
+# ───── 草稿外泄（v0.4.1，借作者自己的 QQ 机器人 v1.17.29）─────
+# 模型不开思考时，偶尔把「想一下再答」的英文草稿写进回复开头，下面才是真正的回话：
+#   「:\nQuestion: what is he asking. Answer: just say hi back. Short.\n\n你好呀」
+# 只看开头连着的几行：只有标点的行（「:」）、英文标签开头（Question: / Answer: / Plan: / Note: …）而且英文字母比汉字多、
+# 至少 4 个英文词的行 → 算草稿。后面剩下的有汉字 → 去掉草稿行；一个字都不剩 → 整条都是草稿；
+# 剩下的是纯英文（对方在用英文聊）→ 不动。只管开头；``` 开头的（写代码）不算草稿行，碰到就停
+DRAFT_LABEL = re.compile(
+    r"^\s*[(（\[]?\s*(?:question|answer|plan|note|notes|draft|reply|response|thinking|thought|thoughts|"
+    r"analysis|context|output|final|translation|reasoning|goal|task|tone|length|style|intent|summary|"
+    r"user|assistant|approach|idea|check|meta)\s*[:：]",
+    re.I,
+)
+DRAFT_PUNCT = re.compile(r"^[\s:：;；,，.。\-—_*#>|/]+$")
+_CJK = re.compile(r"[\u4e00-\u9fff]")
+
+
+def strip_draft(text):
+    """→ (去掉草稿以后的字, 去掉的草稿行[])；没有草稿 → (原样, [])；整条都是草稿 → ("", [草稿行…])"""
+    text = str(text or "")
+    if not text or not (
+        DRAFT_PUNCT.match(text.split("\n", 1)[0] or " ") or DRAFT_LABEL.match(text)
+    ):
+        return text, []  # 第一行既不是标点也不是英文标签：大多数回复走这里，一点不动
+    lines = text.split("\n")
+    i, hit = 0, False
+    while i < len(lines):
+        ln = lines[i]
+        if not ln.strip() or DRAFT_PUNCT.match(ln):
+            i += 1
+            continue
+        if ln.lstrip().startswith("```"):
+            break
+        if (
+            DRAFT_LABEL.match(ln)
+            and len(re.findall(r"[A-Za-z]", ln)) > len(_CJK.findall(ln))
+            and len(re.findall(r"[A-Za-z]{2,}", ln)) >= 4
+        ):  # 至少 4 个英文词：「Note：这首歌叫 Yellow」不算草稿
+            hit = True
+            i += 1
+            continue
+        break
+    if not hit:
+        return text, []  # 只有标点行、没有英文标签行：不算草稿（比如就回了个「：」+ 一句话）
+    rest = "\n".join(lines[i:]).strip()
+    if rest and not _CJK.search(rest):
+        return text, []  # 剩下的是纯英文：多半是对方在用英文聊，不动
+    return rest, [x.strip() for x in lines[:i] if x.strip()]
 
 
 def think_only(text):
