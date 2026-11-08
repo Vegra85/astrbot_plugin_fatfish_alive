@@ -14,6 +14,8 @@
 不同场合用同一条曲线的不同次方（次方越小越不受影响；0 = 永远回）：
   private 私聊 0 · direct 找它（@ / 引用 / 唤醒词）0.1 · follow 接话 2.5 · chat 插话 3 · extra 冒泡/主动 3
 管理员、「不限的人」不掷；火力全开时谁都不掷。
+有人找它（私聊 / 群里 @ / 引用 / 唤醒词）默认不掷、一定回（never_skip_sought，v0.4.3，借作者自己的 QQ 机器人 11-07 v1.17.25：
+  跳过找它的人 = 对方那边它突然消失了；省 token 只省它自己想插嘴、接话、冒泡的那些）。关掉 = 照旧按上面的次方掷。
 同一个人在同一个会话被跳过以后又来找（私聊 / 找它 / 接话）：每被跳过一次 概率开一次平方根（越执着越容易回），回了就清零。
 「重新算」：花费只从那一刻算起（流水不动）；过了统计窗口自动失效。
 
@@ -35,6 +37,7 @@ KIND_NAME = {
     "chat": "插话",
     "extra": "冒泡/主动",
 }
+SOUGHT_KINDS = ("private", "direct")  # 有人找它：never_skip_sought 开着就不掷（v0.4.3）
 BOOST_KINDS = (
     "private",
     "direct",
@@ -51,6 +54,7 @@ DEFAULTS = {
     "power_follow": 2.5,
     "power_chat": 3.0,
     "power_extra": 3.0,
+    "never_skip_sought": True,
     "skip_window_min": 15,
     "price_miss": 0.15,
     "price_hit": 0.003,
@@ -445,7 +449,7 @@ class Budget:
         self, kind, conv="", uid="", name="", admin=False, now=None, roll=None, where=""
     ):
         """这次回不回 → {"ok", "why", "p", "w", "u", "kind", "boost", "roll", "by"}
-        by：admin（管理员 / 不限的人）、off（没开）、full（火力全开）、roll（掷的）"""
+        by：admin（管理员 / 不限的人）、off（没开）、full（火力全开）、sought（有人找它，v0.4.3）、roll（掷的）"""
         now = time.time() if now is None else now
         uid = str(uid or "")
         kind = str(kind or "chat")
@@ -470,6 +474,8 @@ class Budget:
         elif self.full_state(now)["on"]:
             d.update(by="full", why="火力全开：不掷")
             day["full"] = day.get("full", 0) + 1
+        elif self.cfg["never_skip_sought"] and kind in SOUGHT_KINDS:
+            d.update(by="sought", why=f"有人找它（{KIND_NAME.get(kind, kind)}）：不掷，一定回")
         key = f"{conv}|{uid}"
         if d["by"] != "roll":
             day["pass"][kind] = day["pass"].get(kind, 0) + 1

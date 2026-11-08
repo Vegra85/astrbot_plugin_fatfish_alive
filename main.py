@@ -1,18 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-大肥鱼 · 活人感（AstrBot 插件）：攒一攒 + 群聊节奏 + 省 token + 兜底 + 发消息（v0.2.0：打字节奏 / 打字刹车 / 群里引用），合成一个。
+鱼力max · 活人感（AstrBot 插件）：攒一攒 + 群聊节奏 + 省 token + 兜底 + 发消息（v0.2.0：打字节奏 / 打字刹车 / 群里引用），合成一个。
 v0.3.0：攒一攒「尾巴含糊才问」、私聊「他还在输入」多等一会儿；群聊节奏的标记防伪造；让路名单加 angel_heart / reply_merge / qq_enhance。
 v0.4.0：撤回 / 算了（攒一攒里还排着的他撤回了 → 不回；分段发的时候他撤回了 / 说「算了」→ 剩下的不发）；
         接话打分（借 Inner Thoughts：没点名它的群消息按 8 条打分 + 一句理由；默认影子，只记不改）。
 v0.4.2：让路表补 消息防抖 / 对话分段 Pro / Enhance Mode；私聊里只管群的同类插件不算让路；显示名改「鱼力max · 活人感」
+v0.4.3：有人找它就一定回（省 token 不掷）；私聊回不上时说一声（兜底）；跟天使之心一起装：拦下的那一轮替它记成结束
 v0.4.1：草稿外泄（兜底：回复开头漏出来模型的英文草稿去掉；整条都是草稿 → 补调一次 / 不发）。
+v0.5.0：档位（安静 / 默认 / 话多 / 自定义，在 core/conf.py 读配置那一层盖住 12 项细项）；「哪里不对 → 改哪项」对照表（core/doctor.py）；
+        启动自检（core/selfcheck.py：AstrBot 自己的设置里跟活人感打架的，只读、只说怎么改）；免打扰时段（core/quiet.py）。
 
 原来是三个插件（攒一攒 gather / 群聊节奏 rhythm / 省 token budget），共用一套钩子顺序，靠优先级互相猜。
 现在放进一个插件，顺序在这里排死：
 
   群消息监听（max-1）  记一笔 → 发消息记一笔（刹车 / 叫停 / 引用要看）→ 群聊节奏打分（要不要接；v0.4.0 接话打分也在这儿）→ 攒一攒记内容
                        （撤回 / 戳一戳 / 正在输入这类通知不是有人说话：只给发消息记「撤回了哪条」、给攒一攒记「他还在输入」「撤回了还排着的哪条」）
-  要叫模型之前（1000000）  攒一攒等 → 省 token 掷骰子 → 群聊节奏记「正在回话」→ 发消息登记「这个人在等她回」
+  要叫模型之前（1000000）  攒一攒等 → 免打扰（v0.5.0：群里没人找它的不说）→ 省 token 掷骰子 → 群聊节奏记「正在回话」→ 发消息登记「这个人在等她回」
                           （别的插件常在这个钩子里发「正在思考中…」，所以省 token 不能排到负数，不然被拦的也会先发出一句）
   回话请求（40）       群聊节奏的场景提示 + 兜底的去 AI 腔提示
   回话请求（最后）     兜底：防伪造 —— 他说的话、AstrBot 群聊上下文、别的插件加的段落里手打的「[群聊节奏]」标成他打的字
@@ -41,8 +44,11 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, StarTools
 
-from .core import compat, inner
-from .core.conf import Sub, truthy
+from .core import compat, doctor, inner
+from .core import quiet as Q
+from .core import selfcheck as SC
+from .core.angel import release_angel
+from .core.conf import PRESET_NAME, Sub, covered_rows, preset_of, truthy, upgrade_preset
 from .core.state import Shared, StateStore, migrate_config
 from .modules.budget_mod import BudgetMod
 from .modules.gather_mod import GatherMod
@@ -51,7 +57,7 @@ from .modules.rhythm_mod import RhythmMod
 from .modules.send_mod import SendMod, notice_of
 
 PLUGIN_NAME = "astrbot_plugin_fatfish_alive"
-VERSION = "0.4.2"
+VERSION = "0.5.0"
 TAG = "[活人感]"
 WAIT_PRIORITY = 1000000  # on_waiting_llm_request：比「认 AI」(sys.maxsize) 后、比别的插件默认的 0 先
 LATE_PRIORITY = -sys.maxsize + 100  # on_llm_request 的最后一步：防伪造（v0.3.0）
@@ -113,7 +119,7 @@ class _OnlyBare(filter.CustomFilter):
 
 
 class FatfishAlive(Star):
-    """大肥鱼 · 活人感"""
+    """鱼力max · 活人感"""
 
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -131,6 +137,15 @@ class FatfishAlive(Star):
         self._yield_found, self._yield_at, self._yield_logged = [], 0.0, None
         self._saver = None
         self._closed = False
+        self.selfcheck_last = None  # （v0.5.0）上一次自检的结果（面板「自检」、/活人感 看）
+        self._quiet_cache = (None, None)  # （v0.5.0）免打扰：(配置, 解析好的)
+        self._quiet_asked = {}  # （v0.5.0）别的插件 ask() 被免打扰挡下：在哪 -> 上次写日志的时间（10 分钟写一次，免得半夜刷屏）
+        try:
+            self._schema = json.loads(
+                (Path(__file__).parent / "_conf_schema.json").read_text(encoding="utf-8")
+            )
+        except Exception:  # noqa: BLE001  读不到只是面板上少了中文名
+            self._schema = {}
         # 先建省 token（群聊节奏要用它），其余的顺序无所谓
         self.budget = BudgetMod(self)
         self.gather = GatherMod(self)
@@ -144,6 +159,12 @@ class FatfishAlive(Star):
         )
         _LIVE = self
         self._migrate_config()
+        self._migrate_preset()  # 要在搬旧配置之后：搬进来的也算「以前改过的」
+        try:
+            self._faq = doctor.rows(self._schema, SC.RULES)  # （v0.5.0）面板「哪里不对」
+        except Exception as e:  # noqa: BLE001  对照表出错不能连累插件加载
+            self._faq = []
+            logger.warning(f"{TAG} 「哪里不对」对照表读不出来：{e!r}"[:200])
         if self.store.migrated:
             logger.info(
                 f"{TAG} 第一次加载：把旧插件的存档搬进来了（{'、'.join(self.store.migrated)}；旧目录没动）"
@@ -154,9 +175,11 @@ class FatfishAlive(Star):
         self.ensure_loops()
         self.yield_reasons()  # 开机就查一次让路，日志里留一笔
         logger.info(
-            f"{TAG} v{VERSION} 已启用：攒一攒{self._tag('gather')} · 群聊节奏{self._tag('rhythm')} · "
+            f"{TAG} v{VERSION} 已启用（档位：{self.preset_name()}）：攒一攒{self._tag('gather')} · 群聊节奏{self._tag('rhythm')} · "
             f"省 token{self._tag('budget')} · 兜底{self._tag('guard')} · 发消息{self._tag('send')}"
         )
+        if self.alive_on():
+            self.run_selfcheck(log=True)  # （v0.5.0）启动自检：AstrBot 自己的设置里跟活人感打架的，写进日志（热重载也会再查一遍）
 
     # ───────── 给各模块用的 ─────────
     def sub(self, name):
@@ -223,6 +246,172 @@ class FatfishAlive(Star):
             logger.warning(
                 f"{TAG} 搬旧配置失败（不影响使用，新配置都是默认值）：{e!r}"[:200]
             )
+
+    def _migrate_preset(self):
+        """（v0.5.0）升级的那一次：AstrBot 给新加的「档位」补的是「默认」；可档位管的 12 项里你以前改过的话，
+        「默认」档会把你改的盖掉 —— 那就把档位设成「自定义」，行为跟以前一样。只试一次（存档里打标记）；存盘失败下次再试"""
+        meta = self.store.data.setdefault("meta", {})
+        if meta.get("preset_checked"):
+            return
+        try:
+            changed = upgrade_preset(self.config)
+            if changed and hasattr(self.config, "save_config"):
+                self.config.save_config()
+            meta["preset_checked"] = VERSION
+            self.store.save(force=True)
+            if changed:
+                names = []
+                for ref in changed:
+                    g, _, k = ref.partition(".")
+                    try:
+                        names.append(self._schema[g]["items"][k]["description"].replace("（档位管）", ""))
+                    except Exception:  # noqa: BLE001
+                        names.append(ref)
+                logger.info(
+                    f"{TAG} 升级到 v{VERSION}：档位管的项里你以前改过「{'、'.join(names)}」→ 档位设成「自定义」，"
+                    "跟以前一样按你填的走（想用档位：配置最上面「档位」换成安静 / 默认 / 话多）"
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"{TAG} 档位的升级检查出错（不影响使用）：{e!r}"[:200])
+
+    # ───────── 档位 / 免打扰 / 自检（v0.5.0）─────────
+    def preset_key(self):
+        return preset_of(self.config)
+
+    def preset_name(self):
+        return PRESET_NAME.get(self.preset_key(), "自定义")
+
+    def quiet_now(self, now=None):
+        """现在在不在免打扰 → {"on", "span", "left_min", "spans", "tz", "at_too", "bad"}（配置没变就不重新解析）"""
+        a = self.sub("alive")
+        raw = a.get("quiet_hours") or []
+        tzname = a.get("quiet_tz", "Asia/Shanghai")
+        key = (json.dumps(raw, ensure_ascii=False, default=str), str(tzname))
+        if self._quiet_cache[0] != key:
+            spans, bad = Q.parse(raw)
+            tz, label, ok = Q.make_tz(tzname)
+            if bad or not ok:
+                logger.warning(
+                    f"{TAG} [免打扰] "
+                    + (f"看不懂的时段跳过了：{'、'.join(bad)}（写成 01:00-07:00 这种）" if bad else "")
+                    + ("；" if bad and not ok else "")
+                    + (f"认不出时区「{tzname}」，按北京时间算" if not ok else "")
+                )
+            self._quiet_cache = (key, (spans, bad, tz, label))
+        spans, bad, tz, label = self._quiet_cache[1]
+        st = Q.state(now, spans, tz) if spans else {"on": False, "span": "", "left_min": 0}
+        st.update(
+            spans=[Q.span_text(a_, b_) for a_, b_ in spans],
+            tz=label,
+            at_too=truthy(a.get("quiet_at_too"), False),
+            bad=list(bad),
+        )
+        return st
+
+    def note_quiet(self):
+        """免打扰拦下了一次（面板「今天」）"""
+        day = time.strftime("%Y-%m-%d")
+        if self.stats.get("day") != day:
+            self.stats.clear()
+            self.stats["day"] = day
+        self.stats["quiet"] = int(self.stats.get("quiet", 0)) + 1
+        self.save()
+
+    def _quiet_stop(self, event):
+        """要叫模型之前（v0.5.0）：免打扰时段里，群里没人找它的（别的插件 / AstrBot 主动回复让它自己说的）不说；
+        有人 @ / 引用 / 用唤醒词叫它的照回，「免打扰时被 @ 也不回」开着才拦（只叫名字、没 @ 的不算找它：群聊节奏那边就不接了）。私聊不管。→ True = 拦下了"""
+        try:
+            if self._is_private(event):
+                return False
+            q = self.quiet_now()
+            why = Q.stop_why(
+                q,
+                kind=event.get_extra("fatfish_kind"),
+                woken=bool(getattr(event, "is_at_or_wake_command", False)),
+            )
+            if not why:
+                return False
+            gid = event.get_group_id()
+            who = event.get_sender_name() or str(event.get_sender_id() or "")
+            text = re.sub(r"\s+", " ", event.message_str or "")[:20]
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"{TAG} [免打扰] 判断出错（这条照常）：{e!r}"[:200])
+            return False
+        try:
+            release_angel(self.context, event, "活人感拦下（免打扰）")  # 跟天使之心一起装：替它把这一轮记成结束
+            event.stop_event()
+        except Exception as e:  # noqa: BLE001  停不下来就照常回
+            logger.warning(f"{TAG} [免打扰] 拦这一轮出错（这条照常）：{e!r}"[:200])
+            return False
+        try:
+            self.note_quiet()
+            logger.info(f"{TAG} [免打扰] 群{gid} {who}「{text}」→ 不回（{why}；{q['span']} {q['tz']}）")
+        except Exception:  # noqa: BLE001  记数 / 日志出错不影响已经拦下
+            pass
+        return True
+
+    def _quiet_for(self, kind, conv, where):
+        """给别的插件的 ask()：免打扰时段里，群里主动说话（冒泡 / 插话 / 接话）说不行 → 原因 / ""。私聊、有人找它的不管"""
+        try:
+            if not self.alive_on():
+                return ""
+            return Q.ask_why(self.quiet_now(), kind, conv, where)
+        except Exception as e:  # noqa: BLE001  别的插件调的公开方法：出错当不在免打扰
+            logger.debug(f"{TAG} [免打扰] ask 里判断出错：{e!r}")
+            return ""
+
+    def _astr_profiles(self):
+        """AstrBot 的每一份配置文件 → [(名字, 配置)]（默认那份在前）；拿不到就只看默认配置"""
+        out = []
+        try:
+            acm = getattr(self.context, "astrbot_config_mgr", None)
+            confs = dict(getattr(acm, "confs", None) or {})
+            names = {}
+            try:
+                for info in acm.get_conf_list():
+                    names[str(info.get("id"))] = str(info.get("name") or "")
+            except Exception:  # noqa: BLE001  拿不到名字就用 id
+                pass
+            for cid, conf in sorted(confs.items(), key=lambda kv: kv[0] != "default"):
+                out.append(("默认" if cid == "default" else (names.get(cid) or str(cid)[:8]), conf))
+        except Exception:  # noqa: BLE001
+            out = []
+        if not out:
+            try:
+                out = [("默认", self.context.get_config())]
+            except Exception:  # noqa: BLE001
+                out = []
+        return out
+
+    def _sc_mods(self):
+        def on(n):
+            return truthy(self.sub(n).get("enable"), True)
+
+        sc = self.send.conf
+        return {
+            "rhythm": on("rhythm"),
+            "gather": on("gather"),
+            "send": on("send"),
+            "guard": on("guard"),
+            "typing_human": bool(sc("typing_human")),
+            "typing_brake": bool(sc("typing_brake")),
+            "quote_mode": sc("quote_mode"),
+        }
+
+    def run_selfcheck(self, log=False):
+        """查一遍 AstrBot 自己的设置（只读）→ 结果；log=True 写进日志（一条一行、说怎么改）"""
+        try:
+            res = SC.check_all(self._astr_profiles(), self._sc_mods())
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"{TAG} [自检] 出错（不影响使用）：{e!r}"[:200])
+            res = {"findings": [], "profiles": [], "rules": len(SC.RULES), "conflicts": 0, "suggests": 0, "error": repr(e)[:120]}
+        res["at"] = int(time.time())
+        self.selfcheck_last = res
+        if log:
+            logger.info(f"{TAG} [自检] {SC.summary(res)}")
+            for f in res["findings"]:
+                (logger.warning if f["level"] == "冲突" else logger.info)(f"{TAG} [自检] {SC.line(f)}")
+        return res
 
     # ───────── 总开关 / 让路 ─────────
     def alive_on(self):
@@ -357,10 +546,12 @@ class FatfishAlive(Star):
 
     @filter.on_waiting_llm_request(priority=WAIT_PRIORITY)
     async def on_waiting(self, event: AstrMessageEvent):
-        """要叫模型了：攒一攒等 →（被停掉就结束）→ 省 token 掷骰子 →（被拦就结束）→ 群聊节奏记「正在回话」"""
+        """要叫模型了：攒一攒等 →（被停掉就结束）→ 免打扰（v0.5.0）→ 省 token 掷骰子 →（被拦就结束）→ 群聊节奏记「正在回话」"""
         if not self.alive_on():
             return
         if await self.gather.wait(event):
+            return
+        if self._quiet_stop(event):  # （v0.5.0）免打扰时段
             return
         if not self.yield_reason("budget", private=self._is_private(event)) and self.budget.gate(event):
             return
@@ -432,6 +623,15 @@ class FatfishAlive(Star):
         return self.budget.full_on()
 
     def ask(self, kind="extra", conv="", uid="", name="", where="") -> tuple:
+        q = self._quiet_for(kind, conv, where)  # （v0.5.0）免打扰时段：群里主动冒泡说不行
+        if q:
+            k, now = str(where or conv), time.time()
+            if now - self._quiet_asked.get(k, 0) >= 600:
+                if len(self._quiet_asked) > 300:  # 只涨不跌的表：满了清一次
+                    self._quiet_asked.clear()
+                self._quiet_asked[k] = now
+                logger.info(f"{TAG} [免打扰] {k} 想主动说一句 → 这次算了（{q}；10 分钟内同一处不再写）")
+            return False, q
         if not self.active("budget"):
             return True, ""
         return self.budget.ask(kind, conv=conv, uid=uid, name=name, where=where)
@@ -483,8 +683,11 @@ class FatfishAlive(Star):
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("活人感")
-    async def cmd_alive(self, event: AstrMessageEvent):
-        """看活人感的状态：哪些模块开着、有没有让路、今天的数"""
+    async def cmd_alive(self, event: AstrMessageEvent, sub: str = ""):
+        """看活人感的状态：哪些模块开着、有没有让路、今天的数；/活人感 自检：查 AstrBot 自己的设置里跟活人感打架的"""
+        if str(sub or "").strip() in ("自检", "检查", "selfcheck", "check"):
+            yield event.plain_result(SC.report(self.run_selfcheck(log=True)))
+            return
         yield event.plain_result(self.status_text())
 
     def status_text(self):
@@ -493,7 +696,7 @@ class FatfishAlive(Star):
         npass, nskip = sum(bt["pass"].values()), sum(bt["skip"].values())
         w = self.budget.b.curve(self.budget.b.spent())
         lines = [
-            f"大肥鱼 · 活人感 v{VERSION}"
+            f"鱼力max · 活人感 v{VERSION}（档位：{self.preset_name()}）"
             + ("" if self.alive_on() else "（总开关关着：什么都不做）"),
             f"攒一攒：{'开' if self.active('gather') else '不工作'}{self._tag('gather')}　群聊节奏：{'开' if self.active('rhythm') else '不工作'}{self._tag('rhythm')}",
             f"省 token：{'开' if self.active('budget') else '不工作'}{self._tag('budget')}　兜底：{'开' if self.active('guard') else '不工作'}{self._tag('guard')}",
@@ -531,6 +734,18 @@ class FatfishAlive(Star):
             )
             + f" · 没接后来又 @ 它 {it['at_after']} · 接了模型选不说 {it['silent']}"
         )
+        q = self.quiet_now()
+        lines.append(
+            (f"免打扰：{'、'.join(q['spans'])}（{q['tz']}）" if q["spans"] else "免打扰：没设")
+            + (f" · 现在在免打扰（还有 {q['left_min']} 分钟）" if q["on"] else "")
+            + (" · 被 @ 也不回" if q["spans"] and q["at_too"] else "")
+            + (f" · 今天拦下 {self.stats.get('quiet', 0)} 次" if self.stats.get("quiet") else "")
+        )
+        sc = self.selfcheck_last
+        if sc:
+            lines.append(
+                f"自检：{sc.get('conflicts', 0)} 项冲突、{sc.get('suggests', 0)} 项建议（发「/活人感 自检」看详细）"
+            )
         return "\n".join(lines)
 
     # ───────── 面板（AstrBot WebUI → 插件 → 打开页面）─────────
@@ -581,6 +796,14 @@ class FatfishAlive(Star):
                     "log": self.yield_log[-10:][::-1],
                 },
                 "migrated": self.store.data.get("meta", {}).get("migrated"),
+                "preset": {  # （v0.5.0）档位和它盖住的几项
+                    "key": self.preset_key(),
+                    "name": self.preset_name(),
+                    "covered": covered_rows(self.config, self._schema),
+                },
+                "quiet": self.quiet_now(),
+                "selfcheck": self.selfcheck_last,
+                "faq": self._faq,
             },
             "gather": self.gather.snapshot(),
             "rhythm": self.rhythm.snapshot(),
@@ -602,4 +825,7 @@ class FatfishAlive(Star):
             return self.budget.web_action(body)
         if m == "rhythm":
             return self.rhythm.web_action(body)
+        if m == "alive" and str(body.get("op") or "") == "selfcheck":  # （v0.5.0）面板「自检」→ 重新检查
+            self.run_selfcheck(log=True)
+            return {"status": "ok", "data": self.snapshot()}
         return {"status": "error", "message": f"不认识的模块：{m[:20]}"}

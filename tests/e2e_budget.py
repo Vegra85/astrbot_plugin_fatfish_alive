@@ -477,10 +477,12 @@ async def main():
         power_chat=1000.0,
         power_extra=1000.0,
         peak_enable=False,
+        never_skip_sought=False,  # v0.4.3 起「有人找它就一定回」默认开；这套测的是掷骰子（@ 它也掷），先关掉
     )
     # 活人感里的别的模块这套测试不测（原来这个插件是单独装的）：关掉，才跟原来的条件一样（群聊节奏会自己叫模型判断、攒一攒会等）
     for g in ("gather", "rhythm", "guard"):
         set_plugin(g, enable=False)
+    set_plugin("alive", preset="custom")  # v0.5.0：半价点、底线归档位管 —— 档位选「自定义」，上面调的曲线才算数
     app = web.Application()
     app.router.add_post("/v1/chat/completions", chat_completions)
     app.router.add_get("/v1/models", models)

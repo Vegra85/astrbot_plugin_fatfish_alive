@@ -25,6 +25,8 @@ request_llm（fatfish_kind=chat）、带「拦住」的它停掉。
   O 还排着没回、他撤回了（v0.4.0）：私聊发了一条马上撤回 → 不叫模型、不回；连发两条撤回后一条 → 只回前一条；
      群里 @ 了马上撤回 → 不回；撤回通知比消息先到 → 这条一到就认出来、不回；面板 / 日志记了
 第二轮（重启）：关掉「私聊里攒」→ 私聊连发两条各回各的；「这些群不攒」里的群不攒；今天的数重启以后还在
+（v0.5.0）第一轮一开始先把省 token「火力全开」一直开着：I / I2 里别的插件标了接话 / 插话，省 token 会掷骰子，
+  偶尔掷没了就「没回」、那一项没过 —— 跟攒一攒无关，现在不受掷骰子影响
 用法：python tests/e2e_astrbot.py [插件目录 默认上一层] [--keep]
   需要装了 astrbot（测过 4.29.3）的 Python，astrbot 命令在 PATH 里；另外要 aiohttp、pyjwt、websockets、Pillow（装 astrbot 时都会带上）
   只在临时文件夹里跑：模型是假的、QQ 端是假的，不连外网。大约 2～3 分钟（AstrBot 起两次）。
@@ -1157,6 +1159,24 @@ async def test_recall(qq):
     )
 
 
+async def full_on():
+    """（v0.5.0）省 token「火力全开」一直开着（面板接口）：这套测的是攒一攒，回不回不该看掷骰子"""
+    token = jwt.encode(
+        {"username": "astrbot", "exp": int(time.time()) + 3600},
+        SECRET,
+        algorithm="HS256",
+    )
+    async with aiohttp.ClientSession() as s:
+        async with s.post(
+            f"http://127.0.0.1:{DASH_PORT}/api/v1/plugins/extensions/{PNAME}/action",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"m": "budget", "do": "full", "hours": -1},
+        ) as r:
+            d = await r.json(content_type=None)
+            full = ((((d or {}).get("data") or {}).get("full")) or {}).get("left")
+            return r.status == 200 and (d or {}).get("status") == "ok" and full == -1
+
+
 async def test_panel():
     print("\n[K 面板接口]")
     token = jwt.encode(
@@ -1283,6 +1303,10 @@ async def main():
             PNAME in text and "Traceback" not in text,
             "AstrBot 起来了、插件加载了、没有报错",
             text[-1500:],
+        )
+        check(
+            await full_on(),
+            "（测试用）省 token「火力全开」一直开着：别的插件标了接话 / 插话的（I、I2）也不掷骰子，不会偶尔没回",
         )
         await test_private_burst(qq)
         await test_private_pic(qq)

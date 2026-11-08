@@ -4,6 +4,8 @@
   2. 空回复救援：模型只回了 <think> 思考、没有正文 → 补调一次模型要一句正文；还是空就不发（默认开）
   3. 草稿外泄（v0.4.1）：回复开头漏出来模型的英文草稿（「Question: … Answer: … Short.」）→ 去掉；整条都是草稿 → 跟空回一样补调一次，还是没有就不发（默认开）
   4. 去 AI 腔：「作为一个AI」「希望对你有帮助」这类客服腔，提醒模型别用、发出去前再去掉（默认关：语气交给人设自己管）
+  5. 私聊回不上时说一声（v0.4.3，借作者自己的 QQ 机器人 11-07 v1.17.25 的「不玩消失」）：私聊里模型报错、空回补救也没要到、
+     整条都是草稿 —— 以前什么都不发，对方那边就是它突然不理人了 → 换成一句系统提示（同一个人 30 分钟最多一次；群里照旧不发）
 报错拦截 / 草稿外泄 / 去 AI 腔 在发送前拦（on_decorating_result）；空回复救援 两处：发送前（只有 <think> 的那种）、模型回完（什么都没回的那种）
 """
 
@@ -15,6 +17,7 @@ from astrbot.api import logger
 from astrbot.api.event import MessageChain, MessageEventResult
 import astrbot.api.message_components as Comp
 
+from ..core.angel import release_angel
 from ..core.conf import truthy
 from ..core.guard import (
     AI_TONE_RULE,
@@ -28,7 +31,9 @@ from ..core.guard import (
 )
 
 TAG = "[兜底]"
-KEYS = ("errors", "think_stripped", "rescued", "rescue_failed", "tone", "fake_mark", "draft")
+KEYS = ("errors", "think_stripped", "rescued", "rescue_failed", "tone", "fake_mark", "draft", "fail_notice")
+FAIL_NOTICE = "（系统提示）这会儿连不上模型，刚才那条没回上，过一会儿再发一次试试。"
+MAX_NOTICED = 500
 
 
 def _chain_has_content(chain):
@@ -58,6 +63,7 @@ class GuardMod:
         st = host.store.get("guard")
         self.stats = st.get("stats") or {}
         self.recent = deque(st.get("recent") or [], maxlen=20)
+        self._noticed = {}  # QQ -> 上次「回不上」提示的时间（只在内存里：重启就清）
         host.store.register("guard", self.dump)
 
     def dump(self):
@@ -86,6 +92,34 @@ class GuardMod:
             {"t": int(time.time()), "kind": kind, "text": (text or "")[:80], "why": why}
         )
         self._save()
+
+    def _notice(self, event, res):
+        """私聊里这条回不上（模型报错 / 空回补救也没要到 / 整条都是草稿）→ 换成一句系统提示（v0.4.3）
+        同一个人 fail_notice_min 分钟里只提示一次；群里不提示。→ True = 换成提示了（照常发出去）"""
+        if res is None or not self._on("fail_notice", True):
+            return False
+        try:
+            private = bool(event.is_private_chat()) or not event.get_group_id()
+            uid = str(event.get_sender_id() or "")
+        except Exception:
+            return False
+        if not private or not uid:
+            return False
+        try:
+            gap = max(0.0, float(self.config.get("fail_notice_min", 30))) * 60
+        except (TypeError, ValueError):
+            gap = 1800.0
+        now = time.time()
+        if now - self._noticed.get(uid, 0) < gap:
+            return False
+        self._noticed[uid] = now
+        if len(self._noticed) > MAX_NOTICED:
+            for k in sorted(self._noticed, key=self._noticed.get)[: len(self._noticed) - MAX_NOTICED]:
+                del self._noticed[k]
+        text = str(self.config.get("fail_notice_text") or "").strip() or FAIL_NOTICE
+        res.chain = [Comp.Plain(text=text)]
+        self._note("fail_notice", text, "私聊里这条回不上：换成一句系统提示")
+        return True
 
     # ───────── 回话请求的最后一步：防伪造标记（v0.3.0）─────────
     def neutralize(self, req, skip=()):
@@ -156,9 +190,13 @@ class GuardMod:
                     )
                     return False
                 self._note("rescue_failed", text, "模型空回，补调也没要到正文：不发")
-            event.set_result(MessageEventResult())
-            event.stop_event()
             self._note("errors", text, "框架报错没发出去")
+            if self._notice(event, res):
+                logger.warning(f"{TAG} 框架报错没发出去，私聊里换成了一句系统提示：{text.strip()[:80]!r}")
+                return True
+            event.set_result(MessageEventResult())
+            release_angel(self.host.context, event, "活人感拦下")  # 跟天使之心一起装：替它把这一轮记成结束（v0.4.3）
+            event.stop_event()
             logger.warning(f"{TAG} 框架报错没发出去：{text.strip()[:80]!r}")
             return True
         if self._on("rescue_empty") and plain and "<think" in text.lower():
@@ -171,11 +209,15 @@ class GuardMod:
                         f"{TAG} 只有 <think> 没正文：补调了一次模型 → {new[:30]!r}"
                     )
                 else:
-                    event.set_result(MessageEventResult())
-                    event.stop_event()
                     self._note(
                         "rescue_failed", text, "只有 <think>，补调也没要到正文：不发"
                     )
+                    if self._notice(event, res):
+                        logger.warning(f"{TAG} 只有 <think> 没正文，补调一次也没要到：私聊里换成了一句系统提示")
+                        return True
+                    event.set_result(MessageEventResult())
+                    release_angel(self.host.context, event, "活人感拦下")  # 跟天使之心一起装：替它把这一轮记成结束（v0.4.3）
+                    event.stop_event()
                     logger.warning(
                         f"{TAG} 只有 <think> 没正文，补调一次也没要到：这条不发"
                     )
@@ -228,7 +270,12 @@ class GuardMod:
             )
             return False
         self._fix_history(event, drop_turn=True)
+        if self._notice(event, res):
+            self._note("draft", drop, "整条都是模型的草稿：私聊里换成了一句系统提示")
+            logger.warning(f"{TAG} 草稿外泄：整条都是模型的草稿（{drop!r}），补调也没要到正文：私聊里换成了一句系统提示")
+            return True
         event.set_result(MessageEventResult())
+        release_angel(self.host.context, event, "活人感拦下")  # 跟天使之心一起装：替它把这一轮记成结束（v0.4.3）
         event.stop_event()
         self._note("draft", drop, "整条都是模型的草稿：不发")
         logger.warning(f"{TAG} 草稿外泄：整条都是模型的草稿（{drop!r}），补调也没要到正文：这条不发")
@@ -373,5 +420,6 @@ class GuardMod:
                 "rescue_empty": truthy(c.get("rescue_empty"), True),
                 "strip_draft": truthy(c.get("strip_draft"), True),
                 "strip_ai_tone": truthy(c.get("strip_ai_tone"), False),
+                "fail_notice": truthy(c.get("fail_notice"), True),
             },
         }

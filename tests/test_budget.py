@@ -319,7 +319,7 @@ check(
 )
 
 print("\n[7 被跳过以后又来找：开平方根]")
-b = Budget()
+b = Budget({"never_skip_sought": False})  # 这一节测掷骰子；v0.4.3 起有人找它默认不掷（见第 13 节）
 spend_to(b, 0.45, TUE_OFF)  # 意愿 55%：接话 0.55^2.5 ≈ 22%
 p0 = 0.55**2.5
 d1 = b.decide("follow", "g1", "5", "小李", now=TUE_OFF, roll=0.3)
@@ -610,6 +610,31 @@ check(
     "每一项都有中文说明和提示",
     [k for k, v in schema.items() if not (v.get("description") and v.get("hint"))],
 )
+
+print("\n[13 有人找它就一定回（v0.4.3，借作者自己的 QQ 机器人 11-07：不玩消失）]")
+b = Budget()
+check(b.cfg.get("never_skip_sought") is True, "默认开", b.cfg.get("never_skip_sought"))
+spend_to(b, 1000, TUE_OFF)  # 花了一大堆：意愿掉到底线
+dd = b.decide("direct", "g", "1", "小李", now=TUE_OFF, roll=0.999)
+check(dd["ok"] and dd["by"] == "sought" and "一定回" in dd["why"], "群里 @ 它：花得再多也不掷、回", dd)
+dp = b.decide("private", "p", "2", now=TUE_OFF, roll=0.999)
+check(dp["ok"] and dp["by"] == "sought", "私聊：不掷、回", dp)
+df = b.decide("follow", "g", "1", now=TUE_OFF, roll=0.999)
+dc = b.decide("chat", "g", "1", now=TUE_OFF, roll=0.999)
+dx = b.decide("extra", "g", "1", now=TUE_OFF, roll=0.999)
+check(
+    not df["ok"] and not dc["ok"] and not dx["ok"] and df["by"] == dc["by"] == dx["by"] == "roll",
+    "接话、插话、冒泡照旧掷（省 token 省的是这些）",
+    (df, dc, dx),
+)
+t13 = b.today(TUE_OFF)
+check(t13["pass"].get("direct") == 1 and t13["pass"].get("private") == 1, "找它的算进「回了」", t13)
+b.configure({"never_skip_sought": False})
+d2 = b.decide("direct", "g", "1", now=TUE_OFF + 1, roll=0.999)
+check(not d2["ok"] and d2["by"] == "roll", "关掉：群里找它又按次方掷（跟以前一样）", d2)
+b.configure({"never_skip_sought": True})
+b.set_full(1, "测试", TUE_OFF + 2)
+check(b.decide("direct", "g", "1", now=TUE_OFF + 3)["by"] == "full", "火力全开时照旧记成「火力全开」")
 
 ok = sum(1 for c, _ in RES if c)
 bad = [m for c, m in RES if not c]

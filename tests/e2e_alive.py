@@ -17,6 +17,10 @@
     打字刹车：他又说了一句正经的 / 「算了」/ 撤回 / 群里刷屏 → 后面的不发、对话记录里只有发出去的；「哈哈哈哈」不刹
   6d（v0.4.0）撤回 / 算了叫停（打字刹车关着）：发了第一段他撤回了 / 群里说「算了」→ 剩下的不发；只是又补了一句 → 照常发完（不混）；
      还没发第一段就撤回了 → 一段都不发、这一轮不进对话记录；叫停关掉 → 照旧发完；打字刹车也开着 → 算叫停不算刹车；面板 / 指令 / 日志
+  7（v0.5.0）档位：同样的群聊（@ 一次 + 不 @ 接着说 5 句），「安静」接得比「话多」少；面板列出被档位盖住的几项
+  8（v0.5.0）免打扰时段（设成现在前后一小时）：没 @ 的不接、冷场不试探；@ 照回；私聊照回；「被 @ 也不回」打开 → @ 也不回
+  9（v0.5.0）启动自检：重启，AstrBot 的配置故意打开「主动回复」→ 日志一条一行写出冲突和怎么改、面板「自检」、/活人感 自检；AstrBot 的配置没被改
+  （第 0、1 段也看：加载时自检写了日志、主动回复关着时不报；旧插件配置里改过档位管的项 → 档位自动「自定义」）
 旁边有别的大肥鱼插件（astrbot_plugin_fatfish_aiguard / seememe / fixup 的源码文件夹）就一起装上（认 AI 设成不认、不刹车），测一起装不冲突。
 用法：python tests/e2e_alive.py [插件目录 默认上一层] [--keep] [--alone（不装旁边的大肥鱼插件）]
 """
@@ -31,6 +35,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import aiohttp
@@ -522,7 +527,8 @@ def plugin_defaults():
 
 # 整份配置：每次都从默认值起，再叠这套测试要的（rhythm 的随机挑着接关掉、话题词保持默认、接话分数线保持默认）
 BASE = {
-    "alive": {},
+    # v0.5.0：这套测的是各模块的细项本身（下面 rhythm 那几项有档位管的）：档位设成「自定义」，填的才算数
+    "alive": {"preset": "custom"},
     "gather": {},
     "rhythm": {
         "reply_prob": 0.0,
@@ -819,6 +825,14 @@ async def main():
                 n in text and "Traceback" not in text.split(n, 1)[-1][:2000],
                 f"一起装的 {n} 也加载了",
             )
+        sc_lines = [x for x in text.splitlines() if "[活人感] [自检]" in x]
+        check(
+            any("查了 AstrBot 的" in x and "0 项冲突" in x for x in sc_lines)
+            and any("群聊上下文一次带太多条" in x and "改：" in x for x in sc_lines)
+            and not any("主动回复" in x for x in sc_lines),
+            "（v0.5.0）加载时自检写进了日志：主动回复关着 → 没有冲突；这套开着群聊上下文、一次带 1000 条 → 一条建议（一条一行、写了怎么改）",
+            sc_lines,
+        )
 
         # ═════════ 1 第一次装：旧存档、旧配置自己接上 ═════════
         print("\n[1 第一次装上：旧三个插件的存档和配置自己接上]")
@@ -866,6 +880,14 @@ async def main():
             and st["gather"]["config"]["private"] is False,
             "而且已经生效",
             st["gather"]["config"],
+        )
+        check(
+            cfg["alive"].get("preset") == "custom"
+            and (al.get("preset") or {}).get("key") == "custom"
+            and "档位设成「自定义」" in text
+            and st["budget"].get("half_usd") == 0.8,
+            "（v0.5.0）搬进来的有档位管的项（基础等几秒 2.5、半价点 0.8）→ 档位自动设成「自定义」，还是按以前改的走",
+            (cfg["alive"], al.get("preset"), [x for x in text.splitlines() if "档位" in x][-2:]),
         )
         check(
             all(al["modules"][n]["on"] for n in ("gather", "rhythm", "budget", "guard"))
@@ -1079,6 +1101,36 @@ async def main():
             "框架报错没发出去" in text or not said,
             "（日志里写了拦下来的原因，或者框架本来就没发）",
             [x for x in text.splitlines() if "框架报错" in x][-1:],
+        )
+        # v0.4.3：私聊里回不上 → 换成一句系统提示（同一个人 30 分钟一次；不进对话记录）
+        PB = -A
+        t0 = time.time()
+        await qq.say_private(A, "BOOM 私聊在吗")
+        await qq.wait_sent(PB, t0, timeout=15)
+        await asyncio.sleep(1.0)
+        said_p = [x[1] for x in qq.sent if x[0] == PB and x[2] >= t0]
+        check(
+            len(said_p) == 1
+            and "（系统提示）" in said_p[0]
+            and not any(w in said_p[0] for w in ("Error", "错误", "Traceback")),
+            "私聊里模型接口报错：报错没发，换成一句系统提示（v0.4.3）",
+            said_p,
+        )
+        t1 = time.time()
+        await qq.say_private(A, "BOOM 私聊再问一次")
+        await qq.wait_sent(PB, t1, timeout=6)
+        said_p2 = [x[1] for x in qq.sent if x[0] == PB and x[2] >= t1]
+        check(not said_p2, "30 分钟里同一个人又回不上：不再提示", said_p2)
+        nc = len(chat_calls)
+        t2 = time.time()
+        await qq.say_private(A, "私聊正常说一句")
+        await qq.wait_sent(PB, t2, timeout=15)
+        await asyncio.sleep(0.8)
+        hist_p = json.dumps(chat_calls[nc]["messages"] if len(chat_calls) > nc else [], ensure_ascii=False)
+        check(
+            len(chat_calls) > nc and "系统提示" not in hist_p,
+            "那句系统提示没进对话记录（下一轮的请求里没有）",
+            hist_p[-400:],
         )
         said, chats, ks = await turn(qq, G4, A, "TONE 在吗", at_bot=True)
         check(
@@ -1787,6 +1839,123 @@ async def main():
             "日志里有 [叫停]（停在第几段、一共没发几段、一段都还没发）",
             [x for x in text.splitlines() if "[叫停]" in x][-4:],
         )
+        # ═════════ 7 档位（v0.5.0）═════════
+        print("\n[7 档位（v0.5.0）：同样的群聊，「安静」接得比「话多」少]")
+
+        async def preset_run(gid):
+            """@ 它一次，然后同一个人不 @ 接着说 5 句（每句都很明显在接它的话）→ (它回了几句, 记下的 kind)"""
+            t0, nk = time.time(), len(kinds())
+            await turn(qq, gid, A, "档位测试在吗", at_bot=True)
+            for line in ("你刚才说的啥意思", "你再说说你的看法呢", "那你觉得明天会下雨吗", "你还在吗", "你怎么不说话了呀"):
+                await turn(qq, gid, A, line, expect=False, quiet=7.0)
+            return (
+                [x[1] for x in sent_to(gid, t0)],
+                [k["kind"] for k in kinds_since(nk) if k.get("g") == str(gid)],
+            )
+
+        await set_config(s, hdr, compat=COMPAT, alive={"preset": "quiet"})
+        code, st = await api_get(s, hdr)
+        pr = (st.get("alive") or {}).get("preset") or {}
+        rcf = (st.get("rhythm") or {}).get("config") or {}
+        cov = {x["ref"]: x for x in pr.get("covered") or []}
+        check(
+            pr.get("key") == "quiet"
+            and len(cov) == 12
+            and (cov.get("rhythm.reply_prob") or {}).get("value") == 0.1
+            and (cov.get("rhythm.reply_prob") or {}).get("mine") == 0.0
+            and rcf.get("yes_score") == 5.0
+            and rcf.get("max_turns") == 3
+            and rcf.get("reply_prob") == 0.1
+            and ((st.get("gather") or {}).get("config") or {}).get("base_sec") == 3.0
+            and (st.get("budget") or {}).get("half_usd") == 0.25,
+            "档位「安静」：面板总览列出被盖住的 12 项（配置里填的挑着接概率 0 不看、按档位 0.1）；群聊节奏 / 攒一攒 / 省 token 用的都是安静档的值",
+            (pr.get("key"), list(cov)[:3], rcf, (st.get("budget") or {}).get("half_usd")),
+        )
+        said_q, ks_q = await preset_run(7020)
+        await set_config(s, hdr, compat=COMPAT, alive={"preset": "chatty"})
+        code, st = await api_get(s, hdr)
+        rcf = (st.get("rhythm") or {}).get("config") or {}
+        check(
+            ((st.get("alive") or {}).get("preset") or {}).get("name") == "话多"
+            and rcf.get("yes_score") == 3.0
+            and rcf.get("max_turns") == 8,
+            "换成「话多」：热重载以后按话多档的值（接话线 3、最多连着接 8 轮）",
+            rcf,
+        )
+        said_c, ks_c = await preset_run(7021)
+        check(
+            len(said_q) < len(said_c) and len(said_q) == 4 and len(said_c) == 6,
+            f"同样的群聊：「安静」回了 {len(said_q)} 句（@ 那句 + 接了 3 句就等人 @）< 「话多」{len(said_c)} 句（5 句都接）",
+            (said_q, said_c),
+        )
+        check(
+            ks_q.count("follow") == 3 and ks_c.count("follow") == 5,
+            "叫模型前记下的：安静接话 3 次、话多 5 次（都是群聊节奏的「接话」）",
+            (ks_q, ks_c),
+        )
+        said, _, _ = await turn(qq, G1, ADMIN, "/活人感")
+        check(said and "档位：话多" in said[0], "/活人感 第一行写着现在的档位", said)
+
+        # ═════════ 8 免打扰（v0.5.0）═════════
+        print("\n[8 免打扰时段（v0.5.0）：设成现在前后一小时（北京时间）]")
+        now_bj = datetime.now(timezone(timedelta(hours=8)))
+        rng = f"{(now_bj - timedelta(hours=1)).strftime('%H:%M')}-{(now_bj + timedelta(hours=1)).strftime('%H:%M')}"
+        QUIET = {"quiet_hours": [rng], "quiet_tz": "Asia/Shanghai"}
+        PROBE = {"idle_min": 0.08, "probe_prob": 1.0, "probe_wait_min": 0.5, "online_min": 5.0, "online_max": 5.0}
+        await set_config(s, hdr, compat=COMPAT, alive=QUIET, rhythm=PROBE)
+        code, st = await api_get(s, hdr)
+        q = (st.get("alive") or {}).get("quiet") or {}
+        check(
+            q.get("on") and q.get("span") == rng and q.get("tz") == "北京时间" and q.get("left_min", 0) > 50,
+            f"面板：现在在免打扰（{rng} 北京时间）",
+            q,
+        )
+        G30 = 7030
+        nl = len(line_calls)
+        said, chats, ks = await turn(qq, G30, A, "免打扰时在吗", at_bot=True)
+        check(len(said) == 1 and chats, "免打扰时段里有人 @ 它：照回", said)
+        said, chats, ks = await turn(qq, G30, A, "你刚才说的啥意思", expect=False, quiet=7.0)
+        check(not said and not chats and not ks, "免打扰时段里没 @、明显在接它的话（平时会接，见第 2 段）：不接、模型都没叫", (said, ks))
+        said, chats, ks = await turn(qq, G30, A, "大头鲢你还在吗", expect=False, quiet=6.0)
+        check(
+            not said and not chats and not ks,
+            "免打扰时只叫它名字、没 @（平时在接话窗口里会接）：也不接 —— 说明里写的就是「只叫名字不算找它」",
+            (said, ks),
+        )
+        await asyncio.sleep(6.0)  # 冷场 5 秒就该试探一句（试探概率 1）
+        text = log_text()
+        check(
+            len(line_calls) == nl
+            and "免打扰时段" in text
+            and "没 @ 的不接话、不挑着接" in text
+            and "冷场试探：免打扰时段" in text,
+            "冷场了也不试探（连模型都没叫）；日志写了因为免打扰没接、没试探",
+            [x for x in text.splitlines() if "免打扰" in x][-3:],
+        )
+        code, st = await api_get(s, hdr)
+        check(((st.get("rhythm") or {}).get("today") or {}).get("quiet", 0) >= 2, "面板「群聊节奏」：今天因为免打扰没接 / 没说几次", (st.get("rhythm") or {}).get("today"))
+        PQ = -A
+        t0 = time.time()
+        await qq.say_private(A, "免打扰时私聊在吗")
+        got = await qq.wait_sent(PQ, t0, timeout=15)
+        check(got, "私聊不受免打扰影响：照回", got)
+        await set_config(s, hdr, compat=COMPAT, alive=dict(QUIET, quiet_at_too=True))
+        said, chats, ks = await turn(qq, G30, A, "免打扰时再叫一次", at_bot=True, expect=False, quiet=7.0)
+        text = log_text()
+        check(
+            not said and not chats and "[免打扰]" in text and "被 @ 也不回" in text,
+            "打开「免打扰时被 @ 也不回」：@ 它也不回（模型都没叫），日志写了为什么",
+            (said, [x for x in text.splitlines() if "[免打扰]" in x][-1:]),
+        )
+        await set_config(s, hdr, compat=COMPAT)  # 恢复：不免打扰
+        said, chats, ks = await turn(qq, G30, A, "现在不免打扰了吧", at_bot=True)
+        code, st = await api_get(s, hdr)
+        check(
+            said and not ((st.get("alive") or {}).get("quiet") or {}).get("on"),
+            "免打扰时段清空：@ 它照常回、面板上不在免打扰了",
+            said,
+        )
+
         text = log_text()
         check(
             not mine_tb(text[text.find("第三轮") :]),
@@ -1800,6 +1969,61 @@ async def main():
                 if any(n in blk[:6000].replace("\\", "/") for n in SIBLINGS)
             ]
             check(not bad, "一起装的大肥鱼插件也没有报错堆栈", bad[:2])
+
+        # ═════════ 9 启动自检（v0.5.0）═════════
+        print("\n[9 启动自检（v0.5.0）：AstrBot 的配置故意打开「主动回复」，重启]")
+        await s.close()
+        await stop(proc)
+        p = ROOT / "data" / "cmd_config.json"
+        cfg = json.loads(p.read_text(encoding="utf-8-sig"))
+        cfg["provider_ltm_settings"]["active_reply"]["enable"] = True
+        p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        log.write("\n===== 第四轮：AstrBot 自带的主动回复打开（自检）=====\n")
+        log.flush()
+        proc, qq = await start(env, log)
+        s = aiohttp.ClientSession()
+        tail = log_text()[log_text().find("第四轮") :]
+        sc_lines = [x for x in tail.splitlines() if "[活人感] [自检]" in x]
+        check(
+            any("1 项冲突" in x for x in sc_lines)
+            and any(
+                "冲突：AstrBot 自带的「主动回复」开着" in x
+                and "回复概率 0.1" in x
+                and "改：AstrBot 配置 → 扩展功能 → 群聊上下文感知 →「主动回复」" in x
+                for x in sc_lines
+            ),
+            "加载时自检：日志里一条一行写出「主动回复」冲突（现在怎样、为什么、在哪改）",
+            sc_lines,
+        )
+        code, st = await api_get(s, hdr)
+        scr = (st.get("alive") or {}).get("selfcheck") or {}
+        check(
+            code == 200
+            and scr.get("conflicts") == 1
+            and any(f.get("id") == "active_reply" and f.get("level") == "冲突" for f in scr.get("findings") or []),
+            "面板「自检」：有这一项（冲突），也带着建议",
+            scr,
+        )
+        said, chats, _ = await turn(qq, G1, ADMIN, "/活人感 自检")
+        check(
+            said and "主动回复" in said[0] and "改：" in said[0] and "只读" in said[0] and not chats,
+            "QQ 里发「/活人感 自检」：回话里写了冲突、为什么、怎么改",
+            said,
+        )
+        code, d = await api_post(s, hdr, {"m": "alive", "op": "selfcheck"})
+        fs = (((d or {}).get("data") or {}).get("alive") or {}).get("selfcheck") or {}
+        check(
+            code == 200 and (d or {}).get("status") == "ok" and any(f.get("id") == "active_reply" for f in fs.get("findings") or []),
+            "面板「重新检查」按钮：重新查一遍，结果一样",
+            d,
+        )
+        cfg2 = json.loads(p.read_text(encoding="utf-8-sig"))
+        check(
+            cfg2["provider_ltm_settings"]["active_reply"]["enable"] is True,
+            "只读：AstrBot 的配置没被改（主动回复还开着，要用户自己关）",
+        )
+        tail = log_text()[log_text().find("第四轮") :]
+        check(not mine_tb(tail), "第四轮 AstrBot 日志里没有本插件的报错堆栈", mine_tb(tail)[:3])
     finally:
         if s is not None:
             await s.close()

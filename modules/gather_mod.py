@@ -31,6 +31,7 @@ from collections import deque
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
 
+from ..core.angel import release_angel
 from ..core.conf import truthy
 from ..core.gather import DEFAULTS, Gatherer, merge_lines
 
@@ -574,12 +575,14 @@ class GatherMod:
         verdict, mem = await self.g.hold(m)
         st = self._today()
         if verdict == "recalled":  # （v0.4.0）排着的只有他撤回的那条：这一轮不回
+            release_angel(self.host.context, event, "活人感拦下")  # 跟天使之心一起装：替它把这一轮记成结束（v0.4.3）
             event.stop_event()
             st["recall_skip"] += 1
             self._save()
             logger.info(f"{TAG} {m.where} {m.who} 把还排着的那条撤回了 → 这一轮不回")
             return True
         if verdict != "go":
+            release_angel(self.host.context, event, "活人感拦下")  # 跟天使之心一起装：替它把这一轮记成结束（v0.4.3）
             event.stop_event()  # 静悄悄地停掉：不叫模型、什么都不发
             st["saved"] += 1
             self._save()

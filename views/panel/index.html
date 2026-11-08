@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>大肥鱼 · 活人感</title>
+<title>鱼力max · 活人感</title>
 <style>
   :root { color-scheme: light; --bg:#ffffff; --surface:#fcfcfb; --fg:#1f2328; --muted:#656d76; --line:#e5e7eb; --grid:#ecebe8; --card:#f6f8fa;
           --accent:#2563eb; --series:#2a78d6; --wash:rgba(42,120,214,.10); --track:#cde2fb; --good:#0ca30c; --bad:#c2410c; --ok:#15803d;
@@ -146,12 +146,35 @@
 #sec-b th, #sec-b td { text-align:right; padding:4px 8px; border-bottom:1px solid var(--line); }
 #sec-b th:first-child, #sec-b td:first-child { text-align:left; }
 #sec-b th { color:var(--muted); font-weight:500; }
+/* v0.5.0：档位 / 免打扰 / 自检 / 哪里不对 */
+.qbox { display:none; background:var(--card); border:1px solid var(--accent); color:var(--fg); border-radius:10px; padding:8px 12px; margin:0 0 12px; }
+#sec-o .pv { font-variant-numeric:tabular-nums; }
+#sec-o .pv .mine { color:var(--muted); text-decoration:line-through; margin-left:6px; }
+#sec-c .row, #sec-f .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+#sec-c button { font:inherit; font-size:13px; padding:5px 12px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); cursor:pointer; }
+#sec-c button:hover { border-color:var(--accent); color:var(--accent); }
+#sec-c button:disabled { opacity:.5; cursor:default; }
+#sec-c .info, #sec-f .info { margin:10px 0 0; color:var(--muted); font-size:13px; }
+#sec-c .info b { color:var(--fg); font-weight:500; }
+#sec-c .list, #sec-f .list { display:flex; flex-direction:column; gap:8px; margin-top:10px; }
+#sec-c .item, #sec-f .item { border:1px solid var(--line); border-radius:10px; padding:8px 12px; font-size:13px; }
+#sec-c .item .head, #sec-f .item .head { display:flex; flex-wrap:wrap; gap:4px 10px; align-items:baseline; font-size:14px; font-weight:500; }
+#sec-c .item .k, #sec-f .item .k { color:var(--muted); font-size:12px; margin-top:4px; }
+#sec-c .item .v, #sec-f .item .v { margin-top:2px; word-break:break-word; }
+#sec-c .tag { display:inline-block; padding:0 6px; border-radius:6px; font-size:12px; border:1px solid var(--line); white-space:nowrap; font-weight:400; }
+#sec-c .tag.bad { color:var(--bad); border-color:var(--bad); }
+#sec-c .tag.warn { color:var(--warn); border-color:var(--warn); }
+#sec-c .muted { color:var(--muted); }
+#sec-c .empty, #sec-f .empty { color:var(--muted); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+#sec-f ul { margin:4px 0 0; padding-left:18px; }
+#sec-f li { margin:2px 0; }
+#sec-f code { font-size:12px; color:var(--muted); }
 #sec-b details summary { cursor:pointer; color:var(--muted); font-size:13px; margin-top:8px; }
 #sec-b .scroll { overflow-x:auto; }
 </style>
 </head>
 <body>
-<h1>大肥鱼 · 活人感</h1>
+<h1>鱼力max · 活人感</h1>
 <p class="sub">攒一攒再回 + 群聊节奏 + 省 token + 兜底 + 发消息，合成一个插件。先看总览，细节在各个标签页。</p>
 <div id="err"></div>
 <div class="tabs" id="tabs">
@@ -159,17 +182,27 @@
   <button data-tab="g">攒一攒<i class="dot"></i></button>
   <button data-tab="r">群聊节奏<i class="dot"></i></button>
   <button data-tab="b">省 token<i class="dot"></i></button>
+  <button data-tab="c">自检<i class="dot"></i></button>
+  <button data-tab="f">哪里不对</button>
 </div>
 
 <div class="sec" id="sec-o">
 <div class="ybox" id="y-top"></div>
+<div class="qbox" id="q-top"></div>
 <div class="cards">
+  <div class="card"><b id="o-preset">-</b><span>档位（配置最上面那项）</span></div>
+  <div class="card"><b id="o-quiet">-</b><span id="o-quiet-l">免打扰</span></div>
+  <div class="card"><b id="o-sc">-</b><span>自检：冲突 / 建议</span></div>
   <div class="card"><b id="o-msgs">-</b><span>今天收到几条消息</span></div>
   <div class="card"><b id="o-merges">-</b><span>攒一攒：合并了几次</span></div>
   <div class="card"><b id="o-follow">-</b><span>群聊节奏：今天接话 / 挑着接</span></div>
   <div class="card"><b id="o-pass">-</b><span>省 token：回 / 跳过</span></div>
   <div class="card"><b id="o-guard">-</b><span>兜底：拦下的报错 / 补救</span></div>
 </div>
+
+<h2>档位盖住的几项</h2>
+<p class="note" id="o-preset-note"></p>
+<table id="o-preset-tb"><thead><tr><th>配置项</th><th>按档位走的值</th><th>键名</th></tr></thead><tbody id="o-preset-rows"></tbody></table>
 
 <h2>各模块现在</h2>
 <table><thead><tr><th>模块</th><th>状态</th><th>说明</th></tr></thead><tbody id="o-mods"></tbody></table>
@@ -187,6 +220,7 @@
   <div class="card"><b id="o-g-failed">-</b><span>补救没成</span></div>
   <div class="card"><b id="o-g-tone">-</b><span>去掉客服腔</span></div>
   <div class="card"><b id="o-g-draft">-</b><span>去掉开头的草稿</span></div>
+  <div class="card"><b id="o-g-notice">-</b><span>私聊回不上：说了一声</span></div>
 </div>
 <p class="note" id="o-g-cfg"></p>
 <div class="list" id="o-g-recent" style="margin-top:8px"></div>
@@ -227,6 +261,7 @@
 <div class="sec" id="sec-r"><div class="ybox" id="y-r"></div>
 <p class="sub">没 @ 但在接它的话也接；说上话以后在线聊一阵，没点名的话挑着接；冷场试探一句，到点说句收尾话再潜水。</p>
 <div class="warn" id="r-warn">插件现在是关着的（配置里「开启群聊节奏」）。</div>
+<div class="warn" id="r-quiet"></div>
 <div id="r-err"></div>
 <div class="cards">
   <div class="card"><b id="r-n-follow">-</b><span>今天接话（没 @ 也接上）</span></div>
@@ -313,6 +348,18 @@
 <h2>最近的决定</h2>
 <div class="list" id="b-recent"></div>
 
+</div>
+
+<div class="sec" id="sec-c">
+<p class="sub">查 AstrBot 自己的设置里会跟活人感打架的。只读：只告诉你改哪里，不替你改。插件加载时查一次；改完 AstrBot 的设置点下面重新查，QQ 里发「/活人感 自检」也一样（查的结果都会写进日志）。</p>
+<div class="row"><button id="c-run">重新检查</button><span class="muted" id="c-at"></span></div>
+<p class="info" id="c-sum"></p>
+<div class="list" id="c-list"></div>
+</div>
+
+<div class="sec" id="sec-f">
+<p class="sub">哪里不对 → 先看什么 → 改哪项。改的是配置里那一项的中文名（后面是键名）；标着「档位管」的，要先把最上面的「档位」选成「自定义」才改得动。AstrBot 自己的设置写的是在 AstrBot 配置里的位置。</p>
+<div class="list" id="f-list"></div>
 </div>
 
 <script>window.__alive = { mods: {} };</script>
@@ -438,6 +485,10 @@ window.__alive.mods.g = {render: render, setApi: function (a) { api = a; }};
     $("n-silent").textContent = t.silent || 0;
     $("n-ai").textContent = t.skip_ai || 0;
     $("warn").style.display = d.enabled === false ? "block" : "none";
+    const q = d.quiet || {};
+    $("quiet").style.display = q.on ? "block" : "none";
+    $("quiet").textContent = q.on ? "现在在免打扰（" + (q.span || "") + " " + (q.tz || "") + "，还有 " + (q.left_min || 0) + " 分钟）：没 @ 的不接话、不挑着接、不冷场试探、不说收尾话；被 @ 的" + (q.at_too ? "也不回（「免打扰时被 @ 也不回」开着）。" : "照回。") +
+      "今天因为免打扰没接 / 没说 " + (t.quiet || 0) + " 次。" : "";
     $("cfg").innerHTML = "接话：<b>" + (c.follow_enable ? "开" : "关") + "</b>（" + esc(c.window_sec) + " 秒内、" + esc(c.yes_score) + " 分接、" +
       esc(c.no_score) + " 分以下不接、中间" + (c.ask_model ? "问模型" : "不接") + "、最多连着 " + esc(c.max_turns) + " 轮）· 在线一阵：<b>" +
       (c.rhythm_enable ? "开" : "关") + "</b>（" + esc(c.online_min) + "~" + esc(c.online_max) + " 分钟、挑着接 " + esc(c.reply_prob) +
@@ -694,7 +745,7 @@ window.__alive.mods.r = {render: render, setApi: function (a) { api = a; }};
       '</span><span class="t">' + esc(ago(s.last)) + '</span><span class="num">今天跳过 ' + esc(s.today) + " 次" + (s.streak ? " · 连着 " + esc(s.streak) + " 次（下次更容易回）" : "") +
       "</span></div>").join("") || '<div class="empty">今天还没跳过谁。</div>';
     // 最近的决定
-    const BY = {admin: "管理员不限", off: "没开", full: "火力全开"};
+    const BY = {admin: "管理员不限", off: "没开", full: "火力全开", sought: "有人找它·一定回"};
     $("recent").innerHTML = (d.recent || []).slice(0, 20).map((r) => '<div class="item"><span class="tag ' + (r.ok ? "ok" : "no") + '">' + (r.ok ? "回" : "跳过") +
       '</span><span class="who">' + esc(r.who) + '</span><span class="t">' + esc(r.where) +
       ((names[r.kind] || r.kind) === r.where ? "" : " · " + esc(names[r.kind] || r.kind)) + " · " + esc(ago(r.t)) +
@@ -726,6 +777,55 @@ window.__alive.mods.r = {render: render, setApi: function (a) { api = a; }};
     resizeTimer = setTimeout(() => { if (last && document.getElementById("sec-b").classList.contains("on")) { drawCurve(last); drawHours(last); } }, 150);
   });
 window.__alive.mods.b = {render: render, setApi: function (a) { api = a; }, redraw: function () { if (last) { drawCurve(last); drawHours(last); } }};
+})();
+</script>
+<script>
+(function () {
+  // v0.5.0：自检（AstrBot 自己的设置里跟活人感打架的；只读）
+  const $ = (id) => document.getElementById("c-" + id);
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+  let api = null;
+  function render(a) {
+    const sc = a.selfcheck || null;
+    if (!sc) { $("sum").textContent = "还没查过（总开关关着时加载不查；点「重新检查」）。"; $("list").innerHTML = ""; $("at").textContent = ""; return; }
+    const d = new Date((sc.at || 0) * 1000);
+    $("at").textContent = sc.at ? "上次查：" + d.toLocaleString() : "";
+    $("sum").innerHTML = "查了 AstrBot 的 <b>" + esc(sc.rules) + "</b> 项设置" + ((sc.profiles || []).length > 1 ? "（" + esc(sc.profiles.length) + " 份配置文件：" + esc(sc.profiles.join("、")) + "）" : "") +
+      "：<b>" + esc(sc.conflicts || 0) + "</b> 项冲突、<b>" + esc(sc.suggests || 0) + "</b> 项建议。冲突 = 会跟活人感打架（重复回、功能失效、漏出不该发的）；建议 = 不打架，改了更好。";
+    $("list").innerHTML = (sc.findings || []).map((f) =>
+      '<div class="item"><div class="head"><span class="tag ' + (f.level === "冲突" ? "bad" : "warn") + '">' + esc(f.level) + "</span>" + esc(f.title) +
+      (f.profile ? '<span class="muted">配置文件「' + esc(f.profile) + "」</span>" : "") + '</div><div class="k">现在</div><div class="v">' + esc(f.now) +
+      '</div><div class="k">为什么</div><div class="v">' + esc(f.why) + '</div><div class="k">改</div><div class="v">' + esc(f.where) + "，" + esc(f.fix) + "</div></div>").join("") ||
+      '<div class="empty">没有跟活人感打架的设置。</div>';
+  }
+  $("run").addEventListener("click", async (ev) => {
+    if (!api) return;
+    const b = ev.currentTarget;
+    b.disabled = true;
+    try { const d = await api.apiPost("action", { m: "alive", op: "selfcheck" }); render((d || {}).alive || {}); document.getElementById("err").textContent = ""; }
+    catch (e) { document.getElementById("err").textContent = "没查成：" + (e && e.message ? e.message : e); }
+    finally { b.disabled = false; }
+  });
+  window.__alive.mods.c = {render: render, setApi: function (x) { api = x; }};
+})();
+</script>
+<script>
+(function () {
+  // v0.5.0：哪里不对 → 改哪项（表在 core/doctor.py；README 那一节照抄）
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+  let shown = "";
+  function render(a) {
+    const rows = a.faq || [];
+    const key = JSON.stringify(rows);
+    if (key === shown) return;  // 静态的表：没变就不重画（免得每 10 秒把展开的东西刷掉）
+    shown = key;
+    document.getElementById("f-list").innerHTML = rows.map((e) =>
+      '<div class="item"><div class="head">' + esc(e.symptom) + '</div><div class="k">先看</div><div class="v">' + esc(e.look) +
+      '</div><div class="k">改哪项</div><ul>' + (e.fix || []).map((x) => "<li><b>" + esc(x.name) + "</b>" +
+        (x.ref.startsWith("astrbot:") ? "（" + esc(x.where) + "）" : " <code>" + esc(x.ref) + "</code>") + "：" + esc(x.how) + "</li>").join("") + "</ul></div>").join("") ||
+      '<div class="empty">读不到对照表（插件版本太老？）。</div>';
+  }
+  window.__alive.mods.f = {render: render, setApi: function () {}};
 })();
 </script>
 <script>
@@ -788,10 +888,11 @@ window.__alive.mods.b = {render: render, setApi: function (a) { api = a; }, redr
     document.getElementById("o-g-failed").textContent = dt.rescue_failed || 0;
     document.getElementById("o-g-tone").textContent = dt.tone || 0;
     document.getElementById("o-g-draft").textContent = dt.draft || 0;
+    document.getElementById("o-g-notice").textContent = dt.fail_notice || 0;
     const c = gd.config || {};
     $("o-g-cfg").textContent = "拦报错：" + (c.block_errors === false ? "关" : "开") + " · 空回补救：" + (c.rescue_empty === false ? "关" : "开") + " · 去草稿：" + (c.strip_draft === false ? "关" : "开") +
-      " · 去 AI 腔：" + (c.strip_ai_tone ? "开" : "关（默认）");
-    const KIND = { errors: "拦下报错", think_stripped: "去 <think>", rescued: "补救成功", rescue_failed: "补救没成", tone: "去客服腔", draft: "去草稿" };
+      " · 去 AI 腔：" + (c.strip_ai_tone ? "开" : "关（默认）") + " · 私聊回不上说一声：" + (c.fail_notice === false ? "关" : "开");
+    const KIND = { errors: "拦下报错", think_stripped: "去 <think>", rescued: "补救成功", rescue_failed: "补救没成", tone: "去客服腔", draft: "去草稿", fail_notice: "回不上·说了一声" };
     $("o-g-recent").innerHTML = (gd.recent || []).map((x) => '<div class="item"><span class="t">' + esc(ago(x.t)) + '</span><span class="tag">' +
       esc(KIND[x.kind] || x.kind) + "</span><span>" + esc(x.text) + '</span><span class="t">' + esc(x.why) + "</span></div>").join("") ||
       '<div class="empty">今天没触发过。</div>';
@@ -810,6 +911,27 @@ window.__alive.mods.b = {render: render, setApi: function (a) { api = a; }, redr
       esc((x.where || "") + " " + (x.who || "")) + "：发了 " + esc(x.sent) + " 段，" + esc(x.why) + '</span><span class="t">没发：' +
       (x.kind === "halt" ? esc(x.n || 1) + " 段，从「" + esc(x.left) + "」起" : esc(x.left)) + "</span></div>").join("") ||
       '<div class="empty">今天没刹过车、没被叫停过。</div>';
+    // v0.5.0：档位 + 盖住的几项、免打扰、自检
+    const pr = a.preset || {}, cov = pr.covered || [];
+    $("o-preset").textContent = pr.name || "-";
+    $("o-preset-note").textContent = pr.key === "custom" || !cov.length ?
+      "档位是「自定义」：全按各分组里你填的细项走。新手可以在配置最上面选「安静 / 默认 / 话多」，下面这 12 项就按档位走。" :
+      "档位是「" + (pr.name || "") + "」：下面 " + cov.length + " 项按档位走，配置里你填的（划掉的那个数）不看。想自己一项项调：配置最上面「档位」选「自定义」。";
+    $("o-preset-tb").style.display = cov.length ? "" : "none";
+    $("o-preset-rows").innerHTML = cov.map((x) => {
+      const same = String(x.mine) === String(x.value) || x.mine == null;
+      return "<tr><td>" + esc(x.name) + '</td><td class="pv">' + esc(x.value) + (same ? "" : '<span class="mine" title="配置里你填的（不看）">' + esc(x.mine) + "</span>") +
+        '</td><td class="muted">' + esc(x.ref) + "</td></tr>";
+    }).join("");
+    const q = a.quiet || {};
+    $("o-quiet").textContent = q.on ? "免打扰中" : ((q.spans || []).length ? "不在" : "没设");
+    $("o-quiet-l").textContent = (q.spans || []).length ? "免打扰：" + q.spans.join("、") + "（" + (q.tz || "") + "）" + (t.quiet ? "，今天拦下 " + t.quiet + " 次" : "") : "免打扰（配置 → 总开关那组）";
+    const qt = $("q-top");
+    qt.style.display = q.on ? "block" : "none";
+    qt.textContent = q.on ? "现在在免打扰（" + (q.span || "") + " " + (q.tz || "") + "，还有 " + (q.left_min || 0) + " 分钟）：群里没人找它不说话；被 @ 的" +
+      (q.at_too ? "也不回" : "照回") + "；私聊不受影响。" : "";
+    const scr = a.selfcheck || null;
+    $("o-sc").textContent = scr ? (scr.conflicts || 0) + " / " + (scr.suggests || 0) : "-";
     const m = a.migrated;
     $("o-mig").textContent = !m ? "没有迁移记录（新装，或旁边没有旧的攒一攒 / 群聊节奏 / 省 token 存档）。" :
       "首次加载时迁移过一次：" + ((m.from || []).length ? "接上了 " + m.from.map((n) => NAMES[n] || n).join("、") + " 的旧存档（旧目录原样没动）" : "旁边没有旧存档") +
@@ -835,10 +957,12 @@ window.__alive.mods.b = {render: render, setApi: function (a) { api = a; }, redr
     d = d || {};
     overview(d);
     tabs(d);
+    const scd = document.querySelector('#tabs button[data-tab="c"] .dot'), sc = (d.alive || {}).selfcheck;
+    if (scd) scd.className = "dot" + (!sc ? " off" : (sc.conflicts ? " yield" : ""));
     const M = window.__alive.mods;
-    [["g", "gather"], ["r", "rhythm"], ["b", "budget"]].forEach((p) => {
+    [["g", "gather"], ["r", "rhythm"], ["b", "budget"], ["c", "alive"], ["f", "alive"]].forEach((p) => {
       try { if (M[p[0]] && d[p[1]]) M[p[0]].render(d[p[1]]); }
-      catch (e) { $("err").textContent = NAMES[p[1]] + " 的页面出错：" + (e && e.message ? e.message : e); }
+      catch (e) { $("err").textContent = (NAMES[p[1]] || "自检 / 哪里不对") + " 的页面出错：" + (e && e.message ? e.message : e); }
     });
   }
 

@@ -22,6 +22,8 @@ v0.4.0：接话打分（借 Inner Thoughts，判断在 core/inner.py）—— �
   生效：换成按分数决定；硬规矩照旧（收尾句不接、同一个人不 @ 最多接几轮、在线时挑着接的间隔 / 次数、正在回话）；
         拿不准的「在接它的话」问一下判断模型（同一个模型、同样的问法），省 token 那道照样在叫模型之前拦。
   事后的证据（看要不要生效用）：没接、他 90 秒内又 @ 了它 → 多半漏接；接了、模型自己选了 [[不说]] → 多半不该插。
+v0.5.0：免打扰时段（配置在总开关那组，判断在 core/quiet.py）—— 这段时间里不接话、不挑着接、不冷场试探、不说收尾话；
+  被 @ / 引用的照回（AstrBot 本来就会回，这里不拦；「免打扰时被 @ 也不回」在 main.py 叫模型之前拦）。
 """
 
 import asyncio
@@ -34,6 +36,7 @@ from astrbot.api.event import MessageChain, MessageEventResult
 from astrbot.api.provider import ProviderRequest
 import astrbot.api.message_components as Comp
 
+from ..core.angel import release_angel
 from ..core import inner as IT
 from ..core.rhythm import (
     SILENT,
@@ -144,6 +147,7 @@ class RhythmMod:
         self._it_pending = []
         self._it_cleaned = ""
         self._ai_cache = (None, set())
+        self._quiet_logged = {}  # （v0.5.0）群 -> 上次在日志里写「免打扰不接」的时间（一个群 10 分钟最多写一次）
         self._alive = True
         self._tasks = set()
         self._ticker = None
@@ -317,7 +321,7 @@ class RhythmMod:
                 pass
 
     def _peer(self, name):
-        """装了、开着的别的大肥鱼插件（用它的公开方法）；没装 / 没开 → None"""
+        """装了、开着的别的鱼力max 插件（用它的公开方法）；没装 / 没开 → None"""
         try:
             md = self.context.get_registered_star(name)
         except Exception:
@@ -445,6 +449,8 @@ class RhythmMod:
                 gk, uid, now
             )  # （v0.4.0）他前面没被接的那句：多半是漏接了
             return
+        if self._quiet_skip(gk, gid, now):  # （v0.5.0）免打扰时段：没 @ 的不接话、不挑着接
+            return
         if is_ai:
             self.daily.add("skip_ai")
             self._save()
@@ -474,6 +480,28 @@ class RhythmMod:
         await self._old_decide(event, gk, uid, name, text, now, hist, m, owner, names)
         if rec is not None:
             self._it_shadow(event, rec)
+
+    def _quiet_skip(self, gk, gid, now):
+        """（v0.5.0）免打扰时段里：没点名它的一律不接（接话、挑着接、接话打分都不跑）→ True = 跳过了。
+        只在它本来会看一眼的时候（刚说完话的接话窗口里、在线聊着）才记数、写日志 —— 免得半夜群里每句都记一笔"""
+        try:
+            q = self.host.quiet_now(now)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"{TAG} 看免打扰出错（当不在免打扰）：{e!r}")
+            return False
+        if not q["on"]:
+            return False
+        st = self.fu.st(gk)
+        near = bool(st["sent"]) and -5 <= now - st["sent"] <= float(self.conf("window_sec"))
+        if near or self.rh.is_active(gk):
+            self.daily.add("quiet")
+            self._save()
+            if now - self._quiet_logged.get(gk, 0) >= 600:
+                self._quiet_logged[gk] = now
+                logger.info(
+                    f"{TAG} 群{gid} 免打扰时段（{q['span']} {q['tz']}，还有 {q['left_min']} 分钟）：没 @ 的不接话、不挑着接"
+                )
+        return True
 
     async def _old_decide(self, event, gk, uid, name, text, now, hist, m, owner, names):
         """原来的接话 / 挑着接（v0.4.0 原样挪进来；接话打分是影子 / 关着时走这里）"""
@@ -914,6 +942,7 @@ class RhythmMod:
         if SILENT not in text:
             return
         event.set_result(MessageEventResult())
+        release_angel(self.host.context, event, "活人感拦下")  # 跟天使之心一起装：替它把这一轮记成结束（v0.4.3）
         event.stop_event()
         gk = self._gk(event)
         self.busy.pop(gk, None)
@@ -1065,6 +1094,12 @@ class RhythmMod:
             if not umo:
                 return
             now = time.time()
+            q = self.host.quiet_now(now)
+            if q["on"]:  # （v0.5.0）免打扰时段：冷场不试探、到点不说收尾话（悄悄回观望）
+                self.daily.add("quiet")
+                self._save()
+                logger.info(f"{TAG} 群{gid} {tag}：免打扰时段（{q['span']} {q['tz']}），这句不说")
+                return
             if not self.rh.line_ok(gk, now):
                 logger.info(
                     f"{TAG} 群{gid} {tag}：这个群这小时主动说够了（每小时最多 {int(self.conf('lines_per_hour'))} 句）这次不说"
@@ -1194,6 +1229,7 @@ class RhythmMod:
                 ],
             },
             "enabled": bool(self.conf("enable")),
+            "quiet": self.host.quiet_now(now),  # （v0.5.0）
             "config": {
                 k: self.conf(k)
                 for k in (

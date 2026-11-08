@@ -2,7 +2,7 @@ name: astrbot_plugin_fatfish_alive
 display_name: 鱼力max · 活人感
 desc: 机器人在 QQ 群里像真人：连发攒一攒再回、没 @ 也会接话、该闭嘴时闭嘴、花多了少说，装了同类插件自动让路。（原「大肥鱼 · 活人感」）全部功能、配置和让路名单见 README。
 short_desc: 群里像个真人：会攒、会接、会闭嘴，花多了少说
-version: v0.4.2
+version: v0.5.0
 author: Vegra85
 repo: https://github.com/Vegra85/astrbot_plugin_fatfish_alive
 license: MIT
@@ -10,6 +10,7 @@ astrbot_version: ">=4.29,<5"
 support_platforms:
   - aiocqhttp
 social_link: https://github.com/Vegra85
+category: 娱乐
 tags:
   - 鱼力max
   - 大肥鱼
@@ -24,3 +25,4 @@ tags:
   - 读空气
   - 省token
   - 防刷屏
+  - 免打扰

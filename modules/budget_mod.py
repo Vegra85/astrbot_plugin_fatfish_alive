@@ -14,6 +14,7 @@ import time
 
 from astrbot.api import logger
 
+from ..core.angel import release_angel
 from ..core.budget import (
     DEFAULTS,
     KIND_NAME,
@@ -137,6 +138,7 @@ class BudgetMod:
                     f"{TAG} {where} {name}「{self._short(event)}」→ 回（{d['why']}）"
                 )
             return False
+        release_angel(self.host.context, event, "活人感拦下")  # 跟天使之心一起装：替它把这一轮记成结束（v0.4.3）
         event.stop_event()
         logger.info(
             f"{TAG} {where} {name}「{self._short(event)}」→ 这次不回（{d['why']}）"

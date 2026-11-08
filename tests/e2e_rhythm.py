@@ -32,6 +32,7 @@ AstrBot 开着「群聊消息记录注入上下文」（README 建议开的）
 
 import asyncio
 import json
+import re
 import os
 import shutil
 import socket
@@ -53,6 +54,9 @@ PLUGIN_SRC = Path(
 ).resolve()
 KEEP = "--keep" in sys.argv
 PNAME = PLUGIN_SRC.name
+VER = re.search(
+    r'^VERSION = "([^"]+)"', (PLUGIN_SRC / "main.py").read_text(encoding="utf-8"), re.M
+).group(1)  # 版本号从 main.py 读（升版本不用改这个测试；以前写死 v0.4.0）
 SELF, A, B, C, AI = 99999, 30001, 30002, 30003, 50005
 G1, G2, G3, G4, G5, G6, G7 = 7001, 7002, 7003, 7004, 7005, 7006, 7007
 RES = []
@@ -400,6 +404,7 @@ def plugin_defaults():
 def conf(rhythm=None, budget=None):
     """整份配置：别的模块这套测试不测（关掉，条件才跟原来单独装群聊节奏一样）；省 token 开着、靠「火力全开」让它不掷骰子"""
     c = plugin_defaults()
+    c["alive"]["preset"] = "custom"  # v0.5.0：这套测的是细项本身（挑着接的概率、最多连着接几轮…归档位管），档位选「自定义」填的才算数
     c["gather"]["enable"] = False
     c["guard"]["enable"] = False
     c["rhythm"].update(rhythm or {})
@@ -643,7 +648,7 @@ async def main():
         text = log_text()
         check(
             PNAME in text
-            and "[活人感] v0.4.0 已启用" in text
+            and f"[活人感] v{VER} 已启用" in text
             and "Traceback" not in text,
             "AstrBot 起来了、插件加载了、没有报错",
             text[-1500:],
