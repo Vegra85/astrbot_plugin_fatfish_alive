@@ -26,9 +26,15 @@ KNOWN = {
     "angel_heart": (("angelheart",), ("gather", "rhythm", "budget")),
     "reply_merge": (("replymerge",), ("gather",)),
     "qq_enhance": (("qqenhance",), ("gather",)),
+    # v0.4.2（11-08 隔壁窗口查出让路表缺的）：
+    "debounce": (("debounce",), ("gather",)),                       # 消息防抖（ONNX 判「说完没」）：跟攒一攒挂同样两个钩子
+    "splitter_pro": (("splitterpro", "对话分段", "outputpro"), ("send",)),   # 对话分段 Pro：前 N-1 段绕过 event.send → 打字节奏 / 刹车管不到
+    "Enhance Mode": (("enhancemode",), ("rhythm",)),                 # 群聊增强：它的主动回复开着时会和群聊节奏抢着回
 }
+# 只在群里干活的同类插件：私聊里它们不管事，我们在私聊里就不用让路（v0.4.2：以前 yield_reason 不分私聊群聊 —— 隔壁窗口查出）
+GROUP_ONLY = {"group_chat_plus", "SpectreCore", "Heartflow", "natural_followup", "jiehua", "angel_heart", "Enhance Mode"}
 OWN_PREFIX = "astrbot_plugin_fatfish_"
-MOD_NAMES = {"gather": "攒一攒", "rhythm": "群聊节奏", "budget": "省 token 的拦截"}
+MOD_NAMES = {"gather": "攒一攒", "rhythm": "群聊节奏", "budget": "省 token 的拦截", "send": "发消息（打字节奏 / 刹车）"}
 
 
 def norm(s):

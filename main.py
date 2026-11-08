@@ -4,6 +4,7 @@
 v0.3.0：攒一攒「尾巴含糊才问」、私聊「他还在输入」多等一会儿；群聊节奏的标记防伪造；让路名单加 angel_heart / reply_merge / qq_enhance。
 v0.4.0：撤回 / 算了（攒一攒里还排着的他撤回了 → 不回；分段发的时候他撤回了 / 说「算了」→ 剩下的不发）；
         接话打分（借 Inner Thoughts：没点名它的群消息按 8 条打分 + 一句理由；默认影子，只记不改）。
+v0.4.2：让路表补 消息防抖 / 对话分段 Pro / Enhance Mode；私聊里只管群的同类插件不算让路；显示名改「鱼力max · 活人感」
 v0.4.1：草稿外泄（兜底：回复开头漏出来模型的英文草稿去掉；整条都是草稿 → 补调一次 / 不发）。
 
 原来是三个插件（攒一攒 gather / 群聊节奏 rhythm / 省 token budget），共用一套钩子顺序，靠优先级互相猜。
@@ -50,7 +51,7 @@ from .modules.rhythm_mod import RhythmMod
 from .modules.send_mod import SendMod, notice_of
 
 PLUGIN_NAME = "astrbot_plugin_fatfish_alive"
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 TAG = "[活人感]"
 WAIT_PRIORITY = 1000000  # on_waiting_llm_request：比「认 AI」(sys.maxsize) 后、比别的插件默认的 0 先
 LATE_PRIORITY = -sys.maxsize + 100  # on_llm_request 的最后一步：防伪造（v0.3.0）
@@ -275,25 +276,37 @@ class FatfishAlive(Star):
             self._yield_found = found
         return self._yield_found
 
-    def yield_reason(self, name):
+    def yield_reason(self, name, private=False):
         """这个模块现在让路吗：不让 → ""；让 → "group_chat_plus、jiehua"（装了谁）。
-        budget = 省 token 的拦截（掷骰子不回）让路；记账照常（v0.3.0，装了 angel_heart 时）"""
-        if name not in ("gather", "rhythm", "budget"):
+        budget = 省 token 的拦截（掷骰子不回）让路；记账照常（v0.3.0，装了 angel_heart 时）
+        private=True（v0.4.2）：这一条是私聊 —— 只在群里干活的同类插件（读空气类、天使之心）不算，私聊里照常干活"""
+        if name not in ("gather", "rhythm", "budget", "send"):
             return ""
         c = self.sub("compat")
         if not truthy(c.get("auto_yield"), True) or truthy(
             c.get("force_" + name), False
         ):
             return ""
-        return "、".join(x[0] for x in self.yield_reasons() if name in x[2])
+        return "、".join(
+            x[0] for x in self.yield_reasons()
+            if name in x[2] and not (private and x[0] in compat.GROUP_ONLY)
+        )
 
-    def active(self, name):
-        """这个模块现在在干活吗：总开关开着、它自己的开关开着、没在让路（省 token 让路只是不拦，照样记账 → 算在干活）"""
+    @staticmethod
+    def _is_private(event):
+        try:
+            return bool(event is not None and (event.is_private_chat() or not event.get_group_id()))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def active(self, name, event=None):
+        """这个模块现在在干活吗：总开关开着、它自己的开关开着、没在让路（省 token 让路只是不拦，照样记账 → 算在干活）
+        带 event（v0.4.2）：私聊里只在群里干活的同类插件不算让路"""
         if not self.alive_on() or not truthy(self.sub(name).get("enable"), True):
             return False
         if name == "budget":
             return True
-        return not self.yield_reason(name)
+        return not self.yield_reason(name, private=self._is_private(event))
 
     def _tag(self, name):
         if not self.alive_on():
@@ -349,7 +362,7 @@ class FatfishAlive(Star):
             return
         if await self.gather.wait(event):
             return
-        if not self.yield_reason("budget") and self.budget.gate(event):
+        if not self.yield_reason("budget", private=self._is_private(event)) and self.budget.gate(event):
             return
         self.rhythm.mark_busy(event)
         self.send.waiting(event)

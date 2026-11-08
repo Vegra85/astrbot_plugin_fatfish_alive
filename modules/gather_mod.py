@@ -123,8 +123,8 @@ class GatherMod:
             v = v.replace("，", ",").split(",")
         return [str(x).strip() for x in v if str(x).strip()]
 
-    def _on(self):
-        return self.host.active("gather")
+    def _on(self, event=None):
+        return self.host.active("gather", event)   # v0.4.2：带 event → 私聊里只管群的同类插件不算让路
 
     def _oops(self, where, e, m=None):
         """出错了：这条不攒（照 AstrBot 原来的样子处理），记一笔日志（同一处 60 秒内只记一次）。
@@ -164,7 +164,7 @@ class GatherMod:
         return f"{event.unified_msg_origin}|{event.get_sender_id()}"
 
     def _scene_ok(self, event):
-        if not self._on():
+        if not self._on(event):
             return False
         sid, uid = str(event.get_self_id() or ""), str(event.get_sender_id() or "")
         if not uid or uid == sid:

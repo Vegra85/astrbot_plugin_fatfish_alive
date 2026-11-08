@@ -60,7 +60,7 @@ check(all(v.get("type") == "object" for v in SCHEMA.values()), "分组都是 obj
 check(SCHEMA["guard"]["items"]["strip_ai_tone"]["default"] is False, "去 AI 腔默认关")
 check(
     (SCHEMA["guard"]["items"].get("strip_draft") or {}).get("default") is True,
-    "草稿外泄（v0.4.1）默认开",
+    "草稿外泄（v0.4.2）默认开",
 )
 check(SCHEMA["compat"]["items"]["auto_yield"]["default"] is True, "自动让路默认开")
 gi = SCHEMA["gather"]["items"]
@@ -96,8 +96,8 @@ meta = (d / "metadata.yaml").read_text(encoding="utf-8")
 check(
     "astrbot_plugin_fatfish_alive" in meta
     and "license: MIT" in meta
-    and "version: v0.4.1" in meta,
-    "metadata.yaml：名字 / 许可证 / 版本（v0.4.1）",
+    and "version: v0.4.2" in meta,
+    "metadata.yaml：名字 / 许可证 / 版本（v0.4.2）",
 )
 
 # ═══════════════ 2 分组配置的读法 ═══════════════
@@ -463,7 +463,7 @@ check(
     "提醒别用客服腔的那句话在",
 )
 
-# ───── 草稿外泄（v0.4.1）─────
+# ───── 草稿外泄（v0.4.2）─────
 sd = getattr(guard, "strip_draft", None)
 D1 = ":\nQuestion: what is he asking about here. Answer: just say hi back. Short.\n\n你好呀 这是正文"
 check(
@@ -1035,14 +1035,14 @@ check(
 main_src = (d / "main.py").read_text(encoding="utf-8")
 CHG = (d / "CHANGELOG.md").read_text(encoding="utf-8").split("\n## ")
 check(
-    'VERSION = "0.4.1"' in main_src
-    and CHG[1].startswith("v0.4.1（2026-11-08）")
-    and CHG[2].startswith("v0.4.0（2026-11-03）")
-    and CHG[3].startswith("v0.3.0（2026-11-02）"),
-    "版本号 0.4.1：main.py / CHANGELOG 顶上一节（v0.4.0、v0.3.0 那两节还在）",
+    'VERSION = "0.4.2"' in main_src
+    and CHG[1].startswith("v0.4.2（2026-11-08）")
+    and CHG[2].startswith("v0.4.1（2026-11-08）")
+    and CHG[3].startswith("v0.4.0（2026-11-03）"),
+    "版本号 0.4.2：main.py / CHANGELOG 顶上一节（v0.4.1、v0.4.0 那两节还在）",
 )
 check(
-    'self.yield_reason("budget")' in main_src
+    'self.yield_reason("budget"' in main_src   # v0.4.2 起带 private= 参数
     and "self.gather.on_notice(event, raw)" in main_src
     and "on_llm_request(priority=LATE_PRIORITY)" in main_src
     and "self.guard.neutralize(" in main_src

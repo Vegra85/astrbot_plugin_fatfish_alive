@@ -732,6 +732,12 @@
         "type": "list",
         "default": [],
         "hint": "除了上面那几个，还有哪些同类插件装了就让路（群聊节奏和攒一攒）：填目录名里的一段，比如 smoothchat"
+      },
+      "force_send": {
+        "description": "强制开：发消息（打字节奏 / 刹车）不让路",
+        "type": "bool",
+        "default": false,
+        "hint": "装了「对话分段 Pro」这类自己发前几段的插件时，发消息那块默认让路（它绕过 event.send，打字节奏和刹车管不到）；确定不冲突就打开"
       }
     }
   }
