@@ -306,7 +306,7 @@ if doctor is not None:
     )
     # README 那一节：照抄同一张表；提到的键都真的存在、同一行里写着中文名
     rd = (d / "README.md").read_text(encoding="utf-8")
-    m = re.search(r"\n## 哪里不对 → 改哪项.*?(?=\n## )", rd, re.S)
+    m = re.search(r"\n## (?:[^\w\s]+ )?哪里不对 → 改哪项.*?(?=\n## )", rd, re.S)  # 标题前可以有 emoji（11-09 README 风格）
     sec = m.group(0) if m else ""
     check(bool(sec), "README 有「哪里不对 → 改哪项」一节")
     check(all(e["symptom"] in sec for e in F), "README 里每条症状都在", [e["symptom"] for e in F if e["symptom"] not in sec])

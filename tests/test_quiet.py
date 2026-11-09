@@ -10,6 +10,7 @@
 
 import calendar
 import json
+import re
 import sys
 from datetime import timedelta, timezone
 from pathlib import Path
@@ -121,7 +122,7 @@ check(
 )
 qh, qa = sch.get("quiet_hours", {}).get("hint", ""), sch.get("quiet_at_too", {}).get("hint", "")
 rd = (d / "README.md").read_text(encoding="utf-8")
-rq = rd.split("## 免打扰时段", 1)[-1].split("\n## ", 1)[0]
+rq = re.split(r"## (?:[^\w\s]+ )?免打扰时段", rd, maxsplit=1)[-1].split("\n## ", 1)[0]  # 标题前可以有 emoji（11-09 README 风格）
 check(
     all("唤醒词叫它的照回" in x and "只叫它名字、没 @ 的不算" in x for x in (qh, rq))
     and "唤醒词叫它也不回" in qa
