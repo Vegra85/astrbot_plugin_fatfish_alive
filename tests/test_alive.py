@@ -96,8 +96,8 @@ meta = (d / "metadata.yaml").read_text(encoding="utf-8")
 check(
     "astrbot_plugin_fatfish_alive" in meta
     and "license: MIT" in meta
-    and "version: v0.5.1" in meta,
-    "metadata.yaml：名字 / 许可证 / 版本（v0.5.1）",
+    and "version: v0.5.2" in meta,
+    "metadata.yaml：名字 / 许可证 / 版本（v0.5.2）",
 )
 
 # ═══════════════ 2 分组配置的读法 ═══════════════
@@ -1036,12 +1036,13 @@ check("tests/ export-ignore" in (d / ".gitattributes").read_text(encoding="utf-8
 main_src = (d / "main.py").read_text(encoding="utf-8")
 CHG = (d / "CHANGELOG.md").read_text(encoding="utf-8").split("\n## ")
 check(
-    'VERSION = "0.5.1"' in main_src
-    and CHG[1].startswith("v0.5.1（2026-11-09）")
-    and CHG[2].startswith("v0.5.0（2026-11-08）")
-    and CHG[3].startswith("v0.4.3（2026-11-08）")
-    and CHG[4].startswith("v0.4.2（2026-11-08）"),
-    "版本号 0.5.1：main.py / CHANGELOG 顶上一节（v0.5.0、v0.4.3、v0.4.2 那几节还在）",
+    'VERSION = "0.5.2"' in main_src
+    and CHG[1].startswith("v0.5.2（2026-11-09）")
+    and CHG[2].startswith("v0.5.1（2026-11-09）")
+    and CHG[3].startswith("v0.5.0（2026-11-08）")
+    and CHG[4].startswith("v0.4.3（2026-11-08）")
+    and CHG[5].startswith("v0.4.2（2026-11-08）"),
+    "版本号 0.5.2：main.py / CHANGELOG 顶上一节（v0.5.1、v0.5.0、v0.4.3、v0.4.2 那几节还在）",
 )
 check(
     'self.yield_reason("budget"' in main_src   # v0.4.2 起带 private= 参数

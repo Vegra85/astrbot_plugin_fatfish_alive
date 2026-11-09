@@ -1,5 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
 
-# 插件市场下载的压缩包里不带测试（用户装插件用不着；市场的自动安全检查也少读一大半）。GitHub 仓库里照样看得到 tests/
+# 插件市场下载的压缩包里不带测试（装插件用不着，包小一半）。GitHub 仓库里照样看得到 tests/
 tests/ export-ignore

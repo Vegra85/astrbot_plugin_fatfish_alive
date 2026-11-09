@@ -57,7 +57,7 @@ from .modules.rhythm_mod import RhythmMod
 from .modules.send_mod import SendMod, notice_of
 
 PLUGIN_NAME = "astrbot_plugin_fatfish_alive"
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 TAG = "[活人感]"
 WAIT_PRIORITY = 1000000  # on_waiting_llm_request：比「认 AI」(sys.maxsize) 后、比别的插件默认的 0 先
 LATE_PRIORITY = -sys.maxsize + 100  # on_llm_request 的最后一步：防伪造（v0.3.0）
