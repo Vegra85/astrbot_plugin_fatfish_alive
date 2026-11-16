@@ -1,6 +1,6 @@
 # 鱼力max · 活人感
 
-> **鱼力max 系列（鱼有分寸）**：[活人感](https://github.com/Vegra85/astrbot_plugin_fatfish_alive) · [认 AI](https://github.com/Vegra85/astrbot_plugin_fatfish_aiguard) · [看图懂梗](https://github.com/Vegra85/astrbot_plugin_fatfish_seememe) · [法庭](https://github.com/Vegra85/astrbot_plugin_fatfish_court) —— 每个都能单独用，一起装自动让路。作者 Vegra85；跟市场上其他叫「大肥鱼」的插件无关（11-08 起由「大肥鱼 · X」改叫「鱼力max · X」，仓库名和配置都没变）。
+> **鱼力max 系列 · 九颗鱼珠（鱼有分寸）**：会聊 **活人感** · [掉线补回](https://github.com/Vegra85/astrbot_plugin_fatfish_catchup) ｜ 会看 [看图懂梗](https://github.com/Vegra85/astrbot_plugin_fatfish_seememe) · [表情包懂你](https://github.com/Vegra85/astrbot_plugin_fatfish_sticker) · [认 AI](https://github.com/Vegra85/astrbot_plugin_fatfish_aiguard) ｜ 会记 [说到做到](https://github.com/Vegra85/astrbot_plugin_fatfish_promise) · [记忆卫生](https://github.com/Vegra85/astrbot_plugin_fatfish_memhyg) ｜ 守规矩 [法庭](https://github.com/Vegra85/astrbot_plugin_fatfish_court) · [群管说了算](https://github.com/Vegra85/astrbot_plugin_fatfish_groupadmin) —— 每个都能单独用，一起装自动让路；集齐九颗召唤神鱼。作者 Vegra85；跟市场上其他叫「大肥鱼」的插件无关（11-08 起由「大肥鱼 · X」改叫「鱼力max · X」，仓库名和配置都没变）。
 
 AstrBot 插件。让机器人在 QQ 里像个真人：不一条一条机械地回、不是人人说话都接、别人之间说话不插嘴、花得多了就少说点、出了岔子也不会把报错发到群里；对方撤回了、说了「算了」，还没发的就不发了；想的话还能像真人一样一段一段打字、对方又说话了就不往下说。
 
@@ -24,15 +24,16 @@ v0.4.0 新加：**撤回 / 算了**（默认开）和 **接话打分**（借 Inn
 
 | | |
 |---|---|
-| [🚀 安装](#-安装) | [🧭 新手先看：档位（v0.5.0）](#-新手先看档位v050) |
-| [🩺 哪里不对 → 改哪项（v0.5.0）](#-哪里不对--改哪项v050) | [🔍 启动自检（v0.5.0）](#-启动自检v050) |
-| [🌙 免打扰时段（v0.5.0，默认不开）](#-免打扰时段v050默认不开) | [🧩 装了同类插件会自动让路](#-装了同类插件会自动让路) |
-| [🔄 从旧三个插件换过来](#-从旧三个插件换过来) | [🔧 配置](#-配置) |
-| [📝 指令（只有 AstrBot 管理员能用）](#-指令只有-astrbot-管理员能用) | [🔌 给别的插件用](#-给别的插件用) |
-| [🧪 测试](#-测试) | [🚧 已知限制](#-已知限制) |
-| [📄 许可](#-许可) | [💬 反馈](#-反馈) |
-| [🐟 鱼力max 全家福](#-鱼力max-全家福) |  |
+| [🚀 安装](#install) | [🧭 新手先看：档位（v0.5.0）](#start) |
+| [🩺 哪里不对 → 改哪项（v0.5.0）](#troubleshoot) | [🔍 启动自检（v0.5.0）](#selfcheck) |
+| [🌙 免打扰时段（v0.5.0，默认不开）](#quiet-hours) | [🧩 装了同类插件会自动让路](#coexist) |
+| [🔄 从旧三个插件换过来](#migrate) | [🔧 配置](#config) |
+| [📝 指令（只有 AstrBot 管理员能用）](#commands) | [🔌 给别的插件用](#api) |
+| [🧪 测试](#tests) | [🚧 已知限制](#limits) |
+| [📄 许可](#license) | [💬 反馈](#feedback) |
+| [🐟 鱼力max 全家福](#family) |  |
 
+<a id="install"></a>
 ## 🚀 安装
 
 - **插件市场**：WebUI → 插件 → 插件市场，搜「鱼力max」或「活人感」。
@@ -41,6 +42,7 @@ v0.4.0 新加：**撤回 / 算了**（默认开）和 **接话打分**（借 Inn
 
 要求：AstrBot ≥ 4.29（在 4.29.3、4.29.4 上测过）；QQ（aiocqhttp / NapCat）。
 
+<a id="start"></a>
 ## 🧭 新手先看：档位（v0.5.0）
 
 > [!IMPORTANT]
@@ -70,6 +72,7 @@ v0.4.0 新加：**撤回 / 算了**（默认开）和 **接话打分**（借 Inn
 
 档位管的是「它自己想不想开口」和「回得快不快」。有人 @ / 引用 / 用唤醒词叫它、私聊，三个档位都照回（省 token 的「有人找它就一定回」照旧），只是安静档等他说完会多等一秒。
 
+<a id="troubleshoot"></a>
 ## 🩺 哪里不对 → 改哪项（v0.5.0）
 
 面板也有这张表（「哪里不对」标签页，跟这里是同一份）。「改哪项」写的是配置里那一项的中文名，后面是键名；标着「档位管」的项要先把档位选成「自定义」才改得动。AstrBot 自己的设置写的是它在 AstrBot 配置里的位置（这几项启动自检也会查）。
@@ -89,6 +92,7 @@ v0.4.0 新加：**撤回 / 算了**（默认开）和 **接话打分**（借 Inn
 | 引用 / @ 挂得不对（私聊也挂引用、自己插话也 @ 人） | 面板「自检」：「回复时 @ 发送人」「引用回复」 | 「群里引用哪条」`send.quote_mode`：选「跟着 AstrBot 的引用回复」（默认）或「插件自己定」<br>AstrBot 配置 → 平台与消息 → 基本 →「回复时 @ 发送人」：关掉 |
 | 话说到一半停了 / 后面几段没发 | 日志里的 [刹车]、[叫停]：写着因为什么停的 | 「撤回 / 算了：剩下的不发（v0.4.0）」`send.halt`：不想他一说「算了」就停，关掉<br>「打字刹车（默认关）」`send.typing_brake`：关掉打字刹车（默认就是关的） |
 
+<a id="selfcheck"></a>
 ## 🔍 启动自检（v0.5.0）
 
 > [!NOTE]
@@ -113,6 +117,7 @@ v0.4.0 新加：**撤回 / 算了**（默认开）和 **接话打分**（借 Inn
 
 活人感那一块关着的，跟它打架的那项就不报（比如群聊节奏关了，主动回复就不算抢）。AstrBot 的默认配置查出来是 0 项冲突、2 项建议（@全体成员、群聊上下文没开）。键名和为什么打架都是读 AstrBot 4.29 的源码查的（`astrbot/core/config/default.py`、`waking_check`、`result_decorate`、`event_bus`、`group_chat_context`），单测会拿装好的 AstrBot 的默认配置把键名再对一遍。
 
+<a id="quiet-hours"></a>
 ## 🌙 免打扰时段（v0.5.0，默认不开）
 
 > [!TIP]
@@ -133,6 +138,7 @@ v0.4.0 新加：**撤回 / 算了**（默认开）和 **接话打分**（借 Inn
 
 面板总览、群聊节奏页写着「现在在免打扰（… 还有几分钟）」，今天拦下几次；`/活人感` 多一行免打扰；日志 `[免打扰]`、`[节奏] … 免打扰时段`。
 
+<a id="coexist"></a>
 ## 🧩 装了同类插件会自动让路
 
 加载时检查装了、启用了哪些同类插件。两个插件都在主动接话、都在合并连发的消息，会重复回、互相打断，所以按下表让路：
@@ -156,6 +162,7 @@ v0.4.0 新加：**撤回 / 算了**（默认开）和 **接话打分**（借 Inn
 - 想不让路：配置 → 兼容 → 「强制开攒一攒」/「强制开群聊节奏」/「强制开省 token 的拦截」，或关掉「自动让路」。
 - 想让别的插件也触发让路：配置 → 兼容 → 「另外要让路的插件」，填目录名里的一段（至少 3 个字；群聊节奏和攒一攒让路）。
 
+<a id="migrate"></a>
 ## 🔄 从旧三个插件换过来
 
 第一次加载时自动做两件事（只读旧的，不删、不改旧目录）：
@@ -165,6 +172,7 @@ v0.4.0 新加：**撤回 / 算了**（默认开）和 **接话打分**（借 Inn
 
 迁完以后在存档里打一个标记，不会再迁。迁移的结果在面板「总览 → 旧存档迁移」里看。换完确认没问题，再把旧三个插件从 `data/plugins` 里删掉（**不要两边一起开**，它们会同时在接话）。
 
+<a id="config"></a>
 ## 🔧 配置
 
 `_conf_schema.json` 分七组，WebUI 里每一项都有中文说明和提示：
@@ -253,16 +261,19 @@ v0.4.0 新加：**撤回 / 算了**（默认开）和 **接话打分**（借 Inn
 - **打字刹车**：她分段发、还没发完，对方又说话了 → 后面没发的不发了，下一轮一起回（他撤回了她在回的那句；他说「算了 / 不用了」；他又说了一句正经的、会再回他的；群里她打字的时候又来了好几句）。第一段一定发；「嗯 / 哈哈 / 好的」不算。没发的不会记进对话记录。
 - **引用回复**（AstrBot 的 `reply_with_quote`）：AstrBot 开着时会引用「触发这一轮的那条」——攒一攒并了几条时常是最后补的一句，私聊、一来一回也挂。本插件默认（`smart`）在你开了它的时候换成「找她的那一条」，该不挂的去掉；规则：只引用 @ 她 / 叫她 / 回复她 / 接着跟她聊的那条；好几个人在等她回 → 她这句提到谁就引用谁；她自己插话不引用；只有一个人、中间没别人说话不引用；私聊不引用。想 AstrBot 没开也这样挂：选「插件自己定」；想完全照 AstrBot：选「不管」。
 
+<a id="commands"></a>
 ## 📝 指令（只有 AstrBot 管理员能用）
 
 - `/活人感`：各模块现在开没开、有没有在让路（v0.3.0 写明因为装了谁、让了哪几块）、今天的数（v0.2.0 多一行发消息：打字节奏 / 刹车 / 引用开没开、今天刹了几次车、换了几次引用）；v0.5.0 第一行写着现在的档位，多两行：免打扰、上次自检几项冲突几项建议。
 - `/活人感 自检`（v0.5.0）：重新查一遍 AstrBot 自己的设置里跟活人感打架的，回话里每项写现在怎样、为什么、在哪改（也写进日志）。只读。
 - `/省token`、`/省token 火力全开 [小时数|一直]`、`/省token 省着点`、`/省token 重新算`：跟原来的省 token 插件一样。
 
+<a id="api"></a>
 ## 🔌 给别的插件用
 
 跟原来的省 token 插件一样，三个公开方法还在（插件名换成 `astrbot_plugin_fatfish_alive`）：`record_usage(resp)`、`ask(kind, conv, uid, name, where)`、`full_on()`。别的插件在 `event` 上写 `event.set_extra("fatfish_kind", "follow" | "chat" | "extra")`，省 token 就按这个场合算。群聊节奏会去问认 AI 插件（`astrbot_plugin_fatfish_aiguard`）这个群里谁是别家的 AI，没装就读它的 `state.json`。
 
+<a id="tests"></a>
 ## 🧪 测试
 
 ```
@@ -284,6 +295,7 @@ python tests/e2e_ext.py --ext 第三方插件目录 --deps 依赖目录   # v0.4
 
 单测不用装 AstrBot；端到端要装了 astrbot（测过 4.29.3 / 4.29.4）的 Python，另外要 aiohttp、pyjwt、websockets、Pillow。都只在临时文件夹里跑，不连外网。
 
+<a id="limits"></a>
 ## 🚧 已知限制
 
 - 「模型回完什么都没有」在 AstrBot 4.29.3 里是被当成报错发出来的（`EmptyModelOutputError`），兜底会拦下并补调一次；「只有 `<think>`」会变成一条空消息，兜底在模型回完时补调并替它发出去。这两处都是照 4.29.3 的行为做的，升级 AstrBot 以后行为可能变。
@@ -300,23 +312,35 @@ python tests/e2e_ext.py --ext 第三方插件目录 --deps 依赖目录   # v0.4
 - 启动自检（v0.5.0）只看 AstrBot 自己的设置，不看别的插件的；是插件加载时查的，之后改了 AstrBot 的设置要点面板「重新检查」或发「/活人感 自检」。键名和行为是照 AstrBot 4.29.4 的源码对的，AstrBot 以后改了可能看不准（单测会拿装好的 AstrBot 默认配置对键名）。「会打架」是读代码推出来的，「主动回复」那条在 e2e 里真开过，别的几条没在真群里复现过。
 - 免打扰时段（v0.5.0）管的是活人感自己的（群聊节奏、要叫模型之前那一步、给别的插件的 `ask()`）：别的插件不叫模型、直接发的消息（比如定时推送），或者不问 `ask()` 就自己主动说话的，管不到。时段按分钟算，正在回的那一轮不会因为进了免打扰被打断。
 
+<a id="license"></a>
 ## 📄 许可
 
 MIT
 
+<a id="feedback"></a>
 ## 💬 反馈
 
 - 遇到问题、有想法：GitHub 提 issue → https://github.com/Vegra85/astrbot_plugin_fatfish_alive/issues
 - 或者来 QQ 群 743856783（鱼力max部署交流群）直接说
 - 报问题时带上：AstrBot 版本、插件版本（WebUI 的插件列表里能看到）、大概几点出的事、日志里相关的那几行（发之前把 QQ 号和 key 抹掉）
 
+<a id="family"></a>
 ## 🐟 鱼力max 全家福
 
-| 插件 | 装它如果你… | 解决什么 |
-|---|---|---|
-| [鱼力max · 活人感](https://github.com/Vegra85/astrbot_plugin_fatfish_alive) | 嫌机器人一条一条机械地回、人人说话都接、花钱太快 | 连发攒一攒再回、没 @ 也会接话、该闭嘴时闭嘴、花多了少说 |
-| [鱼力max · 认 AI](https://github.com/Vegra85/astrbot_plugin_fatfish_aiguard) | 群里还有别人家的机器人，两条鱼互聊个没完 | 不用填名单，自己认出别家 AI、刹住对聊 |
-| [鱼力max · 看图懂梗](https://github.com/Vegra85/astrbot_plugin_fatfish_seememe) | 群友发梗图它看不懂、认不出图里是它自己 | 回话前先看懂字、画面、梗，谐音梗也查 |
-| [鱼力max · 法庭](https://github.com/Vegra85/astrbot_plugin_fatfish_court) | 机器人一句气话就拉黑人、被人一说就乱认错 | 先核对再认错、只有红线才立案、判了才冷却，能申诉 |
+九个插件就是九颗「鱼珠」：每颗单独装都能用，一起装会自动让路、不打架。
+
+**集齐九颗，召唤神鱼** —— 一条会接话、看得懂梗、记得住事、守得住规矩，还知道什么时候该闭嘴的鱼。（神鱼不负责实现愿望，只负责不刷屏。）
+
+| 鱼珠 | 插件 | 装它如果你… | 解决什么 |
+|---|---|---|---|
+| ① 会聊 | [鱼力max · 活人感](https://github.com/Vegra85/astrbot_plugin_fatfish_alive)（就是这颗） | 嫌机器人一条一条机械地回、人人说话都接、花钱太快 | 连发攒一攒再回、没 @ 也会接话、该闭嘴时闭嘴、花多了少说 |
+| ② 会聊 | [鱼力max · 掉线补回](https://github.com/Vegra85/astrbot_plugin_fatfish_catchup) | 重启、掉线、模型出错时，找它的话石沉大海 | 恢复后自己翻记录，把冲它说的、没回的按对话补回一次 |
+| ③ 会看 | [鱼力max · 看图懂梗](https://github.com/Vegra85/astrbot_plugin_fatfish_seememe) | 群友发梗图它看不懂、认不出图里是它自己 | 回话前先看懂字、画面、梗，谐音梗也查 |
+| ④ 会看 | [鱼力max · 表情包懂你](https://github.com/Vegra85/astrbot_plugin_fatfish_sticker) | 表情包插件只会按分类随机发，发得牛头不对马嘴 | 从群友怎么用学意思，回话时挑对的那张，不刷屏 |
+| ⑤ 会看 | [鱼力max · 认 AI](https://github.com/Vegra85/astrbot_plugin_fatfish_aiguard) | 群里还有别人家的机器人，两条鱼互聊个没完 | 不用填名单，自己认出别家 AI、刹住对聊 |
+| ⑥ 会记 | [鱼力max · 说到做到](https://github.com/Vegra85/astrbot_plugin_fatfish_promise) | 机器人嘴上答应「明天提醒你」「我去睡了」，转头就忘、接着冒泡 | 答应的事到点用它自己的口吻去做，说去睡就真不冒泡 |
+| ⑦ 会记 | [鱼力max · 记忆卫生](https://github.com/Vegra85/astrbot_plugin_fatfish_memhyg) | 记忆插件什么都往里塞，揣测当事实、「明天」过几天还是明天 | 只记事实、日期落地、新说法取代旧的、会淡会忘，用户自己能看能删 |
+| ⑧ 守规矩 | [鱼力max · 法庭](https://github.com/Vegra85/astrbot_plugin_fatfish_court) | 机器人一句气话就拉黑人、被人一说就乱认错 | 先核对再认错、只有红线才立案、判了才冷却，能申诉 |
+| ⑨ 守规矩 | [鱼力max · 群管说了算](https://github.com/Vegra85/astrbot_plugin_fatfish_groupadmin) | 群主喊它安静它不听，群友嫌它烦也没办法 | 群主 / 管理员说安静就安静，群友「别接我的话」只对他，被禁言就不发 |
 
 觉得有用请点个 Star，市场里点个「喜欢」—— 这两样决定新用户能不能看到它。
